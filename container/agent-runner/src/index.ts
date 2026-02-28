@@ -459,6 +459,42 @@ async function runQuery(
     const msgType = message.type === 'system' ? `system/${(message as { subtype?: string }).subtype}` : message.type;
     log(`[msg #${messageCount}] type=${msgType}`);
 
+    // Verbose logging of message content
+    if (message.type === 'assistant') {
+      const msg = message as Record<string, unknown>;
+      if (msg.content && Array.isArray(msg.content)) {
+        for (const block of msg.content) {
+          if (block.type === 'text') {
+            log(`  [assistant] text: ${(block.text as string).slice(0, 500)}`);
+          } else if (block.type === 'tool_use') {
+            const input = JSON.stringify(block.input ?? {}).slice(0, 300);
+            log(`  [assistant] tool_use: ${block.name} ${input}`);
+          } else if (block.type === 'tool_result') {
+            const content = typeof block.content === 'string' ? block.content.slice(0, 300) : JSON.stringify(block.content ?? '').slice(0, 300);
+            log(`  [assistant] tool_result: ${content}`);
+          }
+        }
+      } else if (typeof msg.content === 'string') {
+        log(`  [assistant] ${msg.content.slice(0, 500)}`);
+      }
+    }
+
+    if (message.type === 'user') {
+      const msg = message as Record<string, unknown>;
+      if (msg.content && Array.isArray(msg.content)) {
+        for (const block of msg.content) {
+          if (block.type === 'tool_result') {
+            const content = typeof block.content === 'string' ? block.content.slice(0, 300) : JSON.stringify(block.content ?? '').slice(0, 300);
+            log(`  [tool_result] ${block.tool_use_id ? `(${(block.tool_use_id as string).slice(-8)}) ` : ''}${content}`);
+          } else if (block.type === 'text') {
+            log(`  [user] ${(block.text as string).slice(0, 500)}`);
+          }
+        }
+      } else if (typeof msg.content === 'string') {
+        log(`  [user] ${msg.content.slice(0, 500)}`);
+      }
+    }
+
     if (message.type === 'assistant' && 'uuid' in message) {
       lastAssistantUuid = (message as { uuid: string }).uuid;
     }

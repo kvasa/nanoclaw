@@ -418,18 +418,23 @@ export async function runContainerAgent(
       if (timedOut) {
         const ts = new Date().toISOString().replace(/[:.]/g, '-');
         const timeoutLog = path.join(logsDir, `container-${ts}.log`);
-        fs.writeFileSync(
-          timeoutLog,
-          [
-            `=== Container Run Log (TIMEOUT) ===`,
-            `Timestamp: ${new Date().toISOString()}`,
-            `Group: ${group.name}`,
-            `Container: ${containerName}`,
-            `Duration: ${duration}ms`,
-            `Exit Code: ${code}`,
-            `Had Streaming Output: ${hadStreamingOutput}`,
-          ].join('\n'),
-        );
+        try {
+          fs.mkdirSync(logsDir, { recursive: true });
+          fs.writeFileSync(
+            timeoutLog,
+            [
+              `=== Container Run Log (TIMEOUT) ===`,
+              `Timestamp: ${new Date().toISOString()}`,
+              `Group: ${group.name}`,
+              `Container: ${containerName}`,
+              `Duration: ${duration}ms`,
+              `Exit Code: ${code}`,
+              `Had Streaming Output: ${hadStreamingOutput}`,
+            ].join('\n'),
+          );
+        } catch (err) {
+          logger.error({ err, group: group.name, logFile: timeoutLog }, 'Failed to write container log');
+        }
 
         // Timeout after output = idle cleanup, not failure.
         // The agent already sent its response; this is just the
@@ -517,8 +522,13 @@ export async function runContainerAgent(
         );
       }
 
-      fs.writeFileSync(logFile, logLines.join('\n'));
-      logger.debug({ logFile, verbose: isVerbose }, 'Container log written');
+      try {
+        fs.mkdirSync(logsDir, { recursive: true });
+        fs.writeFileSync(logFile, logLines.join('\n'));
+        logger.debug({ logFile, verbose: isVerbose }, 'Container log written');
+      } catch (err) {
+        logger.error({ err, group: group.name, logFile }, 'Failed to write container log');
+      }
 
       if (code !== 0) {
         logger.error(
