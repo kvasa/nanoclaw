@@ -433,7 +433,10 @@ export async function runContainerAgent(
             ].join('\n'),
           );
         } catch (err) {
-          logger.error({ err, group: group.name, logFile: timeoutLog }, 'Failed to write container log');
+          logger.error(
+            { err, group: group.name, logFile: timeoutLog },
+            'Failed to write container log',
+          );
         }
 
         // Timeout after output = idle cleanup, not failure.
@@ -527,7 +530,10 @@ export async function runContainerAgent(
         fs.writeFileSync(logFile, logLines.join('\n'));
         logger.debug({ logFile, verbose: isVerbose }, 'Container log written');
       } catch (err) {
-        logger.error({ err, group: group.name, logFile }, 'Failed to write container log');
+        logger.error(
+          { err, group: group.name, logFile },
+          'Failed to write container log',
+        );
       }
 
       if (code !== 0) {

@@ -77,14 +77,19 @@ export class SlackChannel implements Channel {
       // Bolt's event type is the full MessageEvent union (17+ subtypes).
       // We filter on subtype first, then narrow to the two types we handle.
       const subtype = (event as { subtype?: string }).subtype;
-      if (subtype && subtype !== 'bot_message' && subtype !== 'file_share') return;
+      if (subtype && subtype !== 'bot_message' && subtype !== 'file_share')
+        return;
 
       // After filtering, event is either GenericMessageEvent or BotMessageEvent
       const msg = event as HandledMessageEvent;
 
       // Extract file attachments early so we can check for file-only messages
       const files = (event as unknown as Record<string, unknown>).files as
-        | Array<{ name?: string; mimetype?: string; url_private_download?: string }>
+        | Array<{
+            name?: string;
+            mimetype?: string;
+            url_private_download?: string;
+          }>
         | undefined;
       if (!msg.text && (!files || files.length === 0)) return;
 
@@ -103,8 +108,7 @@ export class SlackChannel implements Channel {
       const groups = this.opts.registeredGroups();
       if (!groups[jid]) return;
 
-      const isBotMessage =
-        !!msg.bot_id || msg.user === this.botUserId;
+      const isBotMessage = !!msg.bot_id || msg.user === this.botUserId;
 
       let senderName: string;
       if (isBotMessage) {
@@ -122,7 +126,10 @@ export class SlackChannel implements Channel {
       let content = msg.text || '';
       if (this.botUserId && !isBotMessage && content) {
         const mentionPattern = `<@${this.botUserId}>`;
-        if (content.includes(mentionPattern) && !TRIGGER_PATTERN.test(content)) {
+        if (
+          content.includes(mentionPattern) &&
+          !TRIGGER_PATTERN.test(content)
+        ) {
           content = `@${ASSISTANT_NAME} ${content}`;
         }
       }
@@ -160,10 +167,7 @@ export class SlackChannel implements Channel {
       this.botUserId = auth.user_id as string;
       logger.info({ botUserId: this.botUserId }, 'Connected to Slack');
     } catch (err) {
-      logger.warn(
-        { err },
-        'Connected to Slack but failed to get bot user ID',
-      );
+      logger.warn({ err }, 'Connected to Slack but failed to get bot user ID');
     }
 
     this.connected = true;
@@ -268,10 +272,17 @@ export class SlackChannel implements Channel {
    * with container-relative paths so the agent can read them.
    */
   private async downloadFiles(
-    files: Array<{ name?: string; mimetype?: string; url_private_download?: string }>,
+    files: Array<{
+      name?: string;
+      mimetype?: string;
+      url_private_download?: string;
+    }>,
     group: RegisteredGroup,
   ): Promise<string[]> {
-    const uploadDir = path.join(resolveGroupFolderPath(group.folder), 'slack-uploads');
+    const uploadDir = path.join(
+      resolveGroupFolderPath(group.folder),
+      'slack-uploads',
+    );
     fs.mkdirSync(uploadDir, { recursive: true });
 
     const descriptions: string[] = [];
@@ -280,10 +291,13 @@ export class SlackChannel implements Channel {
       const name = f.name || 'file';
       const downloadUrl = f.url_private_download;
 
-      const typeLabel = mime.startsWith('image/') ? 'Image'
-        : mime.startsWith('video/') ? 'Video'
-        : mime.startsWith('audio/') ? 'Audio'
-        : 'File';
+      const typeLabel = mime.startsWith('image/')
+        ? 'Image'
+        : mime.startsWith('video/')
+          ? 'Video'
+          : mime.startsWith('audio/')
+            ? 'Audio'
+            : 'File';
 
       if (!downloadUrl) {
         descriptions.push(`[${typeLabel}: ${name}]`);
@@ -302,18 +316,22 @@ export class SlackChannel implements Channel {
 
         const containerPath = `/workspace/group/slack-uploads/${filename}`;
         descriptions.push(`[${typeLabel} attached: ${containerPath}]`);
-        logger.info({ name, size: buffer.length, path: containerPath }, 'Slack file downloaded');
+        logger.info(
+          { name, size: buffer.length, path: containerPath },
+          'Slack file downloaded',
+        );
       } catch (err) {
-        logger.warn({ name, downloadUrl, err }, 'Failed to download Slack file');
+        logger.warn(
+          { name, downloadUrl, err },
+          'Failed to download Slack file',
+        );
         descriptions.push(`[${typeLabel}: ${name} — download failed]`);
       }
     }
     return descriptions;
   }
 
-  private async resolveUserName(
-    userId: string,
-  ): Promise<string | undefined> {
+  private async resolveUserName(userId: string): Promise<string | undefined> {
     if (!userId) return undefined;
 
     const cached = this.userNameCache.get(userId);
