@@ -130,15 +130,26 @@ export function _setRegisteredGroups(
 /** Find the last non-bot message ID (for reaction targeting). */
 function findLastUserMessageId(messages: NewMessage[]): string | undefined {
   for (let i = messages.length - 1; i >= 0; i--) {
-    if (!messages[i].is_bot_message && !messages[i].is_from_me) return messages[i].id;
+    if (!messages[i].is_bot_message && !messages[i].is_from_me)
+      return messages[i].id;
   }
   return undefined;
 }
 
 /** Swap one reaction for another on a message. */
-async function swapReaction(channel: Channel, jid: string, msgId: string, remove: string, add: string): Promise<void> {
-  try { await channel.removeReaction?.(jid, msgId, remove); } catch {}
-  try { await channel.addReaction?.(jid, msgId, add); } catch {}
+async function swapReaction(
+  channel: Channel,
+  jid: string,
+  msgId: string,
+  remove: string,
+  add: string,
+): Promise<void> {
+  try {
+    await channel.removeReaction?.(jid, msgId, remove);
+  } catch {}
+  try {
+    await channel.addReaction?.(jid, msgId, add);
+  } catch {}
 }
 
 /**
@@ -204,14 +215,46 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
 
   await channel.setTyping?.(chatJid, true);
   const reactedMsgId = findLastUserMessageId(missedMessages);
+  let gearTimerId: ReturnType<typeof setTimeout> | null = null;
+  // Tracks which emoji is currently shown — serializes timer vs finalize access
+  let currentReaction: string | null = null;
   if (reactedMsgId) {
-    try { await channel.addReaction?.(chatJid, reactedMsgId, 'eyes'); } catch {}
+    try {
+      await channel.addReaction?.(chatJid, reactedMsgId, 'eyes');
+      currentReaction = 'eyes';
+    } catch {}
     // eyes → gear after short delay so user sees the progression
-    setTimeout(() => swapReaction(channel, chatJid, reactedMsgId, 'eyes', 'gear'), 2000);
+    gearTimerId = setTimeout(async () => {
+      if (currentReaction !== 'eyes') return; // already finalized
+      try {
+        await channel.removeReaction?.(chatJid, reactedMsgId, 'eyes');
+      } catch {}
+      if (currentReaction !== 'eyes') return; // finalized while removing
+      currentReaction = 'gear';
+      try {
+        await channel.addReaction?.(chatJid, reactedMsgId, 'gear');
+      } catch {}
+    }, 2000);
   }
   let hadError = false;
   let outputSentToUser = false;
   let reactionFinalized = false;
+
+  const finalizeReaction = async (emoji: string) => {
+    if (!reactedMsgId || reactionFinalized) return;
+    reactionFinalized = true;
+    if (gearTimerId) clearTimeout(gearTimerId);
+    const removing = currentReaction;
+    currentReaction = null; // signal to timer callback to bail out
+    if (removing) {
+      try {
+        await channel.removeReaction?.(chatJid, reactedMsgId, removing);
+      } catch {}
+    }
+    try {
+      await channel.addReaction?.(chatJid, reactedMsgId, emoji);
+    } catch {}
+  };
 
   const output = await runAgent(group, prompt, chatJid, async (result) => {
     // Streaming output callback — called for each agent result
@@ -227,22 +270,14 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
         await channel.sendMessage(chatJid, text);
         outputSentToUser = true;
       }
-      // gear → white_check_mark on first output
-      if (reactedMsgId && !reactionFinalized) {
-        reactionFinalized = true;
-        await swapReaction(channel, chatJid, reactedMsgId, 'gear', 'white_check_mark');
-      }
+      await finalizeReaction('white_check_mark');
       // Only reset idle timer on actual results, not session-update markers (result: null)
       resetIdleTimer();
     }
 
     if (result.status === 'error') {
       hadError = true;
-      // gear → warning on error
-      if (reactedMsgId && !reactionFinalized) {
-        reactionFinalized = true;
-        await swapReaction(channel, chatJid, reactedMsgId, 'gear', 'warning');
-      }
+      await finalizeReaction('warning');
     }
   });
 
@@ -250,10 +285,7 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
   if (idleTimer) clearTimeout(idleTimer);
 
   // Fallback: if no streaming callback fired (e.g. container crashed), finalize reaction
-  if (reactedMsgId && !reactionFinalized) {
-    const finalEmoji = (output === 'error' || hadError) ? 'warning' : 'white_check_mark';
-    await swapReaction(channel, chatJid, reactedMsgId, 'gear', finalEmoji);
-  }
+  await finalizeReaction(output === 'error' || hadError ? 'warning' : 'white_check_mark');
 
   if (output === 'error' || hadError) {
     // If we already sent output to the user, don't roll back the cursor —
@@ -441,7 +473,10 @@ async function startMessageLoop(): Promise<void> {
             // Show typing indicator while the container processes the piped message
             channel.setTyping?.(chatJid, true);
             const pipedMsgId = findLastUserMessageId(messagesToSend);
-            if (pipedMsgId) channel.addReaction?.(chatJid, pipedMsgId, 'eyes').catch(() => {});
+            if (pipedMsgId)
+              channel
+                .addReaction?.(chatJid, pipedMsgId, 'eyes')
+                .catch(() => {});
           } else {
             // No active container — enqueue for a new one
             queue.enqueueMessageCheck(chatJid);
