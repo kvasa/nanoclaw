@@ -9,6 +9,7 @@ const envConfig = readEnvFile([
   'ASSISTANT_NAME',
   'ASSISTANT_HAS_OWN_NUMBER',
   'SLACK_ONLY',
+  'LOG_LEVEL',
 ]);
 
 export const ASSISTANT_NAME =
@@ -69,5 +70,7 @@ export const TIMEZONE =
 // Slack configuration
 // SLACK_BOT_TOKEN and SLACK_APP_TOKEN are read directly by SlackChannel
 // from .env via readEnvFile() to keep secrets off process.env.
+export const LOG_LEVEL =
+  process.env.LOG_LEVEL || envConfig.LOG_LEVEL || 'info';
 export const SLACK_ONLY =
   (process.env.SLACK_ONLY || envConfig.SLACK_ONLY) === 'true';

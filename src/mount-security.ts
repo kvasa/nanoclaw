@@ -12,10 +12,12 @@ import path from 'path';
 import pino from 'pino';
 
 import { MOUNT_ALLOWLIST_PATH } from './config.js';
+import { readEnvFile } from './env.js';
 import { AdditionalMount, AllowedRoot, MountAllowlist } from './types.js';
 
+const envLogLevel = readEnvFile(['LOG_LEVEL']);
 const logger = pino({
-  level: process.env.LOG_LEVEL || 'info',
+  level: process.env.LOG_LEVEL || envLogLevel.LOG_LEVEL || 'info',
   transport: { target: 'pino-pretty', options: { colorize: true } },
 });
 

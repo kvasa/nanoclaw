@@ -471,6 +471,9 @@ async function runQuery(
     messageCount++;
     const msgType = message.type === 'system' ? `system/${(message as { subtype?: string }).subtype}` : message.type;
     log(`[msg #${messageCount}] type=${msgType}`);
+    if (LLM_LOG_FULL) {
+      log(`[msg #${messageCount}] raw: ${JSON.stringify(message)}`);
+    }
 
     // Verbose logging of message content (detail controlled by LLM_LOG_DETAIL)
     const truncText = (s: string) => LLM_LOG_FULL ? s : s.slice(0, 500);
@@ -531,7 +534,10 @@ async function runQuery(
     if (message.type === 'result') {
       resultCount++;
       const textResult = 'result' in message ? (message as { result?: string }).result : null;
-      log(`Result #${resultCount}: subtype=${message.subtype}${textResult ? ` text=${textResult.slice(0, 200)}` : ''}`);
+      const resultText = textResult && !LLM_LOG_FULL
+        ? ` text=${textResult.slice(0, 200)}`
+        : '';
+      log(`Result #${resultCount}: subtype=${message.subtype}${resultText}`);
       writeOutput({
         status: 'success',
         result: textResult || null,

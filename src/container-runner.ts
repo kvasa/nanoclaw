@@ -14,6 +14,7 @@ import {
   DATA_DIR,
   GROUPS_DIR,
   IDLE_TIMEOUT,
+  LOG_LEVEL,
   TIMEZONE,
 } from './config.js';
 import { readEnvFile } from './env.js';
@@ -229,11 +230,15 @@ function buildContainerArgs(
   args.push('-e', `TZ=${TIMEZONE}`);
 
   // Pass model and log detail level to agent-runner
-  if (process.env.CLAUDE_MODEL) {
-    args.push('-e', `CLAUDE_MODEL=${process.env.CLAUDE_MODEL}`);
+  const agentConfig = readEnvFile(['CLAUDE_MODEL', 'LLM_LOG_DETAIL']);
+  const claudeModel = process.env.CLAUDE_MODEL || agentConfig.CLAUDE_MODEL;
+  const llmLogDetail =
+    process.env.LLM_LOG_DETAIL || agentConfig.LLM_LOG_DETAIL;
+  if (claudeModel) {
+    args.push('-e', `CLAUDE_MODEL=${claudeModel}`);
   }
-  if (process.env.LLM_LOG_DETAIL) {
-    args.push('-e', `LLM_LOG_DETAIL=${process.env.LLM_LOG_DETAIL}`);
+  if (llmLogDetail) {
+    args.push('-e', `LLM_LOG_DETAIL=${llmLogDetail}`);
   }
 
   // Run as host user so bind-mounted files are accessible.
@@ -493,7 +498,7 @@ export async function runContainerAgent(
       const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
       const logFile = path.join(logsDir, `container-${timestamp}.log`);
       const isVerbose =
-        process.env.LOG_LEVEL === 'debug' || process.env.LOG_LEVEL === 'trace';
+        LOG_LEVEL === 'debug' || LOG_LEVEL === 'trace';
 
       const logLines = [
         `=== Container Run Log ===`,
