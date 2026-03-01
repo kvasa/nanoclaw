@@ -32,6 +32,16 @@ describe('JID ownership patterns', () => {
     const jid = 'slack:D0123456789';
     expect(jid.startsWith('slack:')).toBe(true);
   });
+
+  it('Gmail JID: starts with gmail:', () => {
+    const jid = 'gmail:abc123def';
+    expect(jid.startsWith('gmail:')).toBe(true);
+  });
+
+  it('Gmail thread JID: starts with gmail: followed by thread ID', () => {
+    const jid = 'gmail:18d3f4a5b6c7d8e9';
+    expect(jid.startsWith('gmail:')).toBe(true);
+  });
 });
 
 // --- getAvailableGroups ---
@@ -275,5 +285,26 @@ describe('getAvailableGroups', () => {
     expect(groups[0].jid).toBe('slack:C100');
     expect(groups[1].jid).toBe('wa2@g.us');
     expect(groups[2].jid).toBe('wa@g.us');
+  });
+
+  it('excludes Gmail threads from group list (Gmail threads are not groups)', () => {
+    storeChatMetadata(
+      'gmail:abc123',
+      '2024-01-01T00:00:01.000Z',
+      'Email thread',
+      'gmail',
+      false,
+    );
+    storeChatMetadata(
+      'group@g.us',
+      '2024-01-01T00:00:02.000Z',
+      'Group',
+      'whatsapp',
+      true,
+    );
+
+    const groups = getAvailableGroups();
+    expect(groups).toHaveLength(1);
+    expect(groups[0].jid).toBe('group@g.us');
   });
 });

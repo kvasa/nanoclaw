@@ -457,9 +457,9 @@ describe('IPC send_file authorization', () => {
   });
 
   it('non-main group cannot send file to another groups chat', () => {
-    expect(
-      isMessageAuthorized('other-group', false, 'main@g.us', groups),
-    ).toBe(false);
+    expect(isMessageAuthorized('other-group', false, 'main@g.us', groups)).toBe(
+      false,
+    );
     expect(
       isMessageAuthorized('other-group', false, 'third@g.us', groups),
     ).toBe(false);

@@ -228,8 +228,7 @@ export class SlackChannel implements Channel {
 
     try {
       const fileData = fs.readFileSync(filePath);
-      const filename =
-        options?.filename || path.basename(filePath);
+      const filename = options?.filename || path.basename(filePath);
 
       await this.app.client.filesUploadV2({
         channel_id: channelId,

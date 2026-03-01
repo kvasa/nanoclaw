@@ -88,7 +88,11 @@ export interface Channel {
   name: string;
   connect(): Promise<void>;
   sendMessage(jid: string, text: string): Promise<void>;
-  sendFile?(jid: string, filePath: string, options?: SendFileOptions): Promise<void>;
+  sendFile?(
+    jid: string,
+    filePath: string,
+    options?: SendFileOptions,
+  ): Promise<void>;
   isConnected(): boolean;
   ownsJid(jid: string): boolean;
   disconnect(): Promise<void>;
