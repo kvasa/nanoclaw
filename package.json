@@ -16,7 +16,9 @@
     "prepare": "husky",
     "setup": "tsx setup/index.ts",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "backup": "node backup/backup.js",
+    "restore": "node backup/restore.js"
   },
   "dependencies": {
     "@slack/bolt": "^4.6.0",

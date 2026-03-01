@@ -55,6 +55,26 @@ systemctl --user stop nanoclaw
 systemctl --user restart nanoclaw
 ```
 
+## Backup
+
+Daily encrypted backup runs via cron at midnight. Backs up SQLite DB, WhatsApp auth, group memory, sessions, .env, and skills state into AES-256-GCM encrypted archive in `backups/`.
+
+```bash
+npm run backup               # Manual backup
+npm run restore               # Restore from latest backup
+npm run restore -- --force    # Overwrite existing data
+```
+
+Cron setup (already configured on this server):
+```bash
+# View current cron
+crontab -l
+# Set daily midnight backup
+echo '0 0 * * * /home/kvasa/.nvm/versions/node/v22.22.0/bin/node /home/kvasa/code/NanoClaw/backup/backup.js >> /home/kvasa/code/NanoClaw/logs/backup.log 2>&1' | crontab -
+```
+
+Password is set via `BACKUP_PASSWORD` in `.env`.
+
 ## Container Build Cache
 
 The container buildkit caches the build context aggressively. `--no-cache` alone does NOT invalidate COPY steps — the builder's volume retains stale files. To force a truly clean rebuild, prune the builder then re-run `./container/build.sh`.
