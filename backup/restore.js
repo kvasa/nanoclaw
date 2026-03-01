@@ -197,7 +197,17 @@ async function main() {
   const force = args.includes('--force');
   const backupArg = args.find((a) => !a.startsWith('--'));
 
-  // 1. Resolve backup file
+  // 1. Check if NanoClaw is running
+  try {
+    execSync('systemctl --user is-active nanoclaw', { stdio: 'pipe' });
+    console.error('Error: NanoClaw is currently running. Stop it before restoring:');
+    console.error('  systemctl --user stop nanoclaw');
+    process.exit(1);
+  } catch {
+    // not running — good
+  }
+
+  // 2. Resolve backup file
   const backupPath = resolveBackupPath(backupArg);
   console.log(`Backup: ${backupPath}`);
 
@@ -223,7 +233,16 @@ async function main() {
     const tarSize = fs.statSync(tarPath).size;
     console.log(`  Decrypted archive: ${formatBytes(tarSize)}`);
 
-    // 5. Extract
+    // 5. Remove stale SQLite WAL/SHM files (they belong to the old DB, not the restored one)
+    for (const ext of ['-wal', '-shm']) {
+      const walPath = path.join(PROJECT_ROOT, 'store', `messages.db${ext}`);
+      if (fs.existsSync(walPath)) {
+        fs.unlinkSync(walPath);
+        console.log(`  Removed stale ${path.basename(walPath)}`);
+      }
+    }
+
+    // 6. Extract
     console.log('Extracting...');
     execSync(`tar -xzf "${tarPath}" -C "${PROJECT_ROOT}"`, { stdio: 'pipe' });
     console.log('  Files extracted to project root.');
