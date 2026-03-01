@@ -25,7 +25,9 @@ vi.mock('../db.js', () => ({
 
 // Mock transcription
 vi.mock('../transcription.js', () => ({
-  transcribeBuffer: vi.fn().mockResolvedValue('This is a transcribed voice message'),
+  transcribeBuffer: vi
+    .fn()
+    .mockResolvedValue('This is a transcribed voice message'),
 }));
 
 // Mock group-folder (used by downloadFiles)
@@ -1226,9 +1228,7 @@ describe('SlackChannel', () => {
     });
 
     it('falls back to [Audio attached: ...] when transcription throws', async () => {
-      vi.mocked(transcribeBuffer).mockRejectedValueOnce(
-        new Error('API error'),
-      );
+      vi.mocked(transcribeBuffer).mockRejectedValueOnce(new Error('API error'));
 
       const opts = createTestOpts();
       const channel = new SlackChannel(opts);

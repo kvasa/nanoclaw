@@ -13,9 +13,7 @@ vi.mock('./logger.js', () => ({
   },
 }));
 
-const mockCreate = vi.hoisted(() =>
-  vi.fn().mockResolvedValue('Hello world'),
-);
+const mockCreate = vi.hoisted(() => vi.fn().mockResolvedValue('Hello world'));
 
 vi.mock('openai', () => ({
   default: class MockOpenAI {

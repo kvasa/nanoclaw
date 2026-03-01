@@ -414,7 +414,11 @@ export class SlackChannel implements Channel {
             if (transcript) {
               descriptions.push(`[Voice: ${transcript}]`);
               logger.info(
-                { name, size: buffer.length, transcriptLength: transcript.length },
+                {
+                  name,
+                  size: buffer.length,
+                  transcriptLength: transcript.length,
+                },
                 'Slack audio transcribed',
               );
               continue;
