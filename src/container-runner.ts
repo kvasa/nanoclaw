@@ -232,8 +232,7 @@ function buildContainerArgs(
   // Pass model and log detail level to agent-runner
   const agentConfig = readEnvFile(['CLAUDE_MODEL', 'LLM_LOG_DETAIL']);
   const claudeModel = process.env.CLAUDE_MODEL || agentConfig.CLAUDE_MODEL;
-  const llmLogDetail =
-    process.env.LLM_LOG_DETAIL || agentConfig.LLM_LOG_DETAIL;
+  const llmLogDetail = process.env.LLM_LOG_DETAIL || agentConfig.LLM_LOG_DETAIL;
   if (claudeModel) {
     args.push('-e', `CLAUDE_MODEL=${claudeModel}`);
   }
@@ -497,8 +496,7 @@ export async function runContainerAgent(
 
       const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
       const logFile = path.join(logsDir, `container-${timestamp}.log`);
-      const isVerbose =
-        LOG_LEVEL === 'debug' || LOG_LEVEL === 'trace';
+      const isVerbose = LOG_LEVEL === 'debug' || LOG_LEVEL === 'trace';
 
       const logLines = [
         `=== Container Run Log ===`,
