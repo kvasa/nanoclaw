@@ -43,6 +43,10 @@ vi.mock('@slack/bolt', () => ({
         postMessage: vi.fn().mockResolvedValue(undefined),
       },
       filesUploadV2: vi.fn().mockResolvedValue({ files: [] }),
+      reactions: {
+        add: vi.fn().mockResolvedValue({ ok: true }),
+        remove: vi.fn().mockResolvedValue({ ok: true }),
+      },
       conversations: {
         list: vi.fn().mockResolvedValue({
           channels: [],
@@ -876,6 +880,155 @@ describe('SlackChannel', () => {
       await expect(
         channel.setTyping('slack:C0123456789', false),
       ).resolves.toBeUndefined();
+    });
+  });
+
+  // --- addReaction ---
+
+  describe('addReaction', () => {
+    it('calls reactions.add with correct parameters', async () => {
+      const opts = createTestOpts();
+      const channel = new SlackChannel(opts);
+      await channel.connect();
+
+      await channel.addReaction('slack:C0123456789', '1704067200.000000', 'eyes');
+
+      expect(currentApp().client.reactions.add).toHaveBeenCalledWith({
+        channel: 'C0123456789',
+        timestamp: '1704067200.000000',
+        name: 'eyes',
+      });
+    });
+
+    it('strips slack: prefix from JID', async () => {
+      const opts = createTestOpts();
+      const channel = new SlackChannel(opts);
+      await channel.connect();
+
+      await channel.addReaction('slack:D9876543210', '1704067200.000000', 'thumbsup');
+
+      expect(currentApp().client.reactions.add).toHaveBeenCalledWith({
+        channel: 'D9876543210',
+        timestamp: '1704067200.000000',
+        name: 'thumbsup',
+      });
+    });
+
+    it('skips when disconnected', async () => {
+      const opts = createTestOpts();
+      const channel = new SlackChannel(opts);
+
+      // Don't connect
+      await channel.addReaction('slack:C0123456789', '1704067200.000000', 'eyes');
+
+      expect(currentApp().client.reactions.add).not.toHaveBeenCalled();
+    });
+
+    it('does not throw on API error', async () => {
+      const opts = createTestOpts();
+      const channel = new SlackChannel(opts);
+      await channel.connect();
+
+      currentApp().client.reactions.add.mockRejectedValueOnce(
+        new Error('channel_not_found'),
+      );
+
+      await expect(
+        channel.addReaction('slack:C0123456789', '1704067200.000000', 'eyes'),
+      ).resolves.toBeUndefined();
+    });
+
+    it('silently ignores already_reacted error', async () => {
+      const opts = createTestOpts();
+      const channel = new SlackChannel(opts);
+      await channel.connect();
+
+      const { logger } = await import('../logger.js');
+
+      currentApp().client.reactions.add.mockRejectedValueOnce({
+        data: { error: 'already_reacted' },
+      });
+
+      await channel.addReaction('slack:C0123456789', '1704067200.000000', 'eyes');
+
+      expect(logger.warn).not.toHaveBeenCalledWith(
+        expect.objectContaining({ emoji: 'eyes' }),
+        expect.any(String),
+      );
+    });
+  });
+
+  // --- removeReaction ---
+
+  describe('removeReaction', () => {
+    it('calls reactions.remove with correct parameters', async () => {
+      const opts = createTestOpts();
+      const channel = new SlackChannel(opts);
+      await channel.connect();
+
+      await channel.removeReaction('slack:C0123456789', '1704067200.000000', 'eyes');
+
+      expect(currentApp().client.reactions.remove).toHaveBeenCalledWith({
+        channel: 'C0123456789',
+        timestamp: '1704067200.000000',
+        name: 'eyes',
+      });
+    });
+
+    it('strips slack: prefix from JID', async () => {
+      const opts = createTestOpts();
+      const channel = new SlackChannel(opts);
+      await channel.connect();
+
+      await channel.removeReaction('slack:D9876543210', '1704067200.000000', 'gear');
+
+      expect(currentApp().client.reactions.remove).toHaveBeenCalledWith({
+        channel: 'D9876543210',
+        timestamp: '1704067200.000000',
+        name: 'gear',
+      });
+    });
+
+    it('skips when disconnected', async () => {
+      const opts = createTestOpts();
+      const channel = new SlackChannel(opts);
+
+      await channel.removeReaction('slack:C0123456789', '1704067200.000000', 'eyes');
+
+      expect(currentApp().client.reactions.remove).not.toHaveBeenCalled();
+    });
+
+    it('does not throw on API error', async () => {
+      const opts = createTestOpts();
+      const channel = new SlackChannel(opts);
+      await channel.connect();
+
+      currentApp().client.reactions.remove.mockRejectedValueOnce(
+        new Error('channel_not_found'),
+      );
+
+      await expect(
+        channel.removeReaction('slack:C0123456789', '1704067200.000000', 'eyes'),
+      ).resolves.toBeUndefined();
+    });
+
+    it('silently ignores no_reaction error', async () => {
+      const opts = createTestOpts();
+      const channel = new SlackChannel(opts);
+      await channel.connect();
+
+      const { logger } = await import('../logger.js');
+
+      currentApp().client.reactions.remove.mockRejectedValueOnce({
+        data: { error: 'no_reaction' },
+      });
+
+      await channel.removeReaction('slack:C0123456789', '1704067200.000000', 'eyes');
+
+      expect(logger.warn).not.toHaveBeenCalledWith(
+        expect.objectContaining({ emoji: 'eyes' }),
+        expect.any(String),
+      );
     });
   });
 

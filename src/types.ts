@@ -98,6 +98,10 @@ export interface Channel {
   disconnect(): Promise<void>;
   // Optional: typing indicator. Channels that support it implement it.
   setTyping?(jid: string, isTyping: boolean): Promise<void>;
+  // Optional: add emoji reaction to a message (e.g. Slack reactions.add)
+  addReaction?(jid: string, messageId: string, emoji: string): Promise<void>;
+  // Optional: remove emoji reaction from a message (e.g. Slack reactions.remove)
+  removeReaction?(jid: string, messageId: string, emoji: string): Promise<void>;
 }
 
 // Callback type that channels use to deliver inbound messages
