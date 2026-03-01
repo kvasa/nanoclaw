@@ -18,7 +18,8 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "backup": "node backup/backup.js",
-    "restore": "node backup/restore.js"
+    "restore": "node backup/restore.js",
+    "cleanup": "node scripts/cleanup.js"
   },
   "dependencies": {
     "@slack/bolt": "^4.6.0",
