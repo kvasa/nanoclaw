@@ -14,6 +14,7 @@ import {
   OnInboundMessage,
   OnChatMetadata,
   RegisteredGroup,
+  SendFileOptions,
 } from '../types.js';
 
 // Slack's chat.postMessage API limits text to ~4000 characters per call.
@@ -210,6 +211,40 @@ export class SlackChannel implements Channel {
         { jid, err, queueSize: this.outgoingQueue.length },
         'Failed to send Slack message, queued',
       );
+    }
+  }
+
+  async sendFile(
+    jid: string,
+    filePath: string,
+    options?: SendFileOptions,
+  ): Promise<void> {
+    const channelId = jid.replace(/^slack:/, '');
+
+    if (!this.connected) {
+      logger.warn({ jid, filePath }, 'Slack disconnected, file send skipped');
+      return;
+    }
+
+    try {
+      const fileData = fs.readFileSync(filePath);
+      const filename =
+        options?.filename || path.basename(filePath);
+
+      await this.app.client.filesUploadV2({
+        channel_id: channelId,
+        file: fileData,
+        filename,
+        title: options?.title,
+        initial_comment: options?.initialComment,
+      });
+
+      logger.info(
+        { jid, filename, size: fileData.length },
+        'Slack file uploaded',
+      );
+    } catch (err) {
+      logger.error({ jid, filePath, err }, 'Failed to upload Slack file');
     }
   }
 

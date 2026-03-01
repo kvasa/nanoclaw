@@ -52,6 +52,7 @@ beforeEach(() => {
 
   deps = {
     sendMessage: async () => {},
+    sendFile: async () => {},
     registeredGroups: () => groups,
     registerGroup: (jid, group) => {
       groups[jid] = group;
@@ -427,6 +428,47 @@ describe('IPC message authorization', () => {
     expect(isMessageAuthorized('main', true, 'unknown@g.us', groups)).toBe(
       true,
     );
+  });
+});
+
+// --- IPC send_file authorization ---
+// Same authorization logic as message: isMain || (targetGroup.folder === sourceGroup)
+
+describe('IPC send_file authorization', () => {
+  function isMessageAuthorized(
+    sourceGroup: string,
+    isMain: boolean,
+    targetChatJid: string,
+    registeredGroups: Record<string, RegisteredGroup>,
+  ): boolean {
+    const targetGroup = registeredGroups[targetChatJid];
+    return isMain || (!!targetGroup && targetGroup.folder === sourceGroup);
+  }
+
+  it('main group can send file to any group', () => {
+    expect(isMessageAuthorized('main', true, 'other@g.us', groups)).toBe(true);
+    expect(isMessageAuthorized('main', true, 'third@g.us', groups)).toBe(true);
+  });
+
+  it('non-main group can send file to its own chat', () => {
+    expect(
+      isMessageAuthorized('other-group', false, 'other@g.us', groups),
+    ).toBe(true);
+  });
+
+  it('non-main group cannot send file to another groups chat', () => {
+    expect(
+      isMessageAuthorized('other-group', false, 'main@g.us', groups),
+    ).toBe(false);
+    expect(
+      isMessageAuthorized('other-group', false, 'third@g.us', groups),
+    ).toBe(false);
+  });
+
+  it('non-main group cannot send file to unregistered JID', () => {
+    expect(
+      isMessageAuthorized('other-group', false, 'unknown@g.us', groups),
+    ).toBe(false);
   });
 });
 

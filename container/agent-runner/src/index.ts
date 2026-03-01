@@ -427,7 +427,7 @@ async function runQuery(
       model: CLAUDE_MODEL,
       cwd: '/workspace/group',
       additionalDirectories: extraDirs.length > 0 ? extraDirs : undefined,
-      resume: sessionId,
+      resume: sessionId || undefined,
       resumeSessionAt: resumeAt,
       systemPrompt: globalClaudeMd
         ? { type: 'preset' as const, preset: 'claude_code' as const, append: globalClaudeMd }
@@ -440,7 +440,8 @@ async function runQuery(
         'TeamCreate', 'TeamDelete', 'SendMessage',
         'TodoWrite', 'ToolSearch', 'Skill',
         'NotebookEdit',
-        'mcp__nanoclaw__*'
+        'mcp__nanoclaw__*',
+        'mcp__gmail__*',
       ],
       env: sdkEnv,
       permissionMode: 'bypassPermissions',
@@ -455,6 +456,10 @@ async function runQuery(
             NANOCLAW_GROUP_FOLDER: containerInput.groupFolder,
             NANOCLAW_IS_MAIN: containerInput.isMain ? '1' : '0',
           },
+        },
+        gmail: {
+          command: 'npx',
+          args: ['-y', '@gongrzhe/server-gmail-autoauth-mcp'],
         },
       },
       hooks: {
@@ -625,13 +630,39 @@ async function main(): Promise<void> {
   } catch (err) {
     const errorMessage = err instanceof Error ? err.message : String(err);
     log(`Agent error: ${errorMessage}`);
-    writeOutput({
-      status: 'error',
-      result: null,
-      newSessionId: sessionId,
-      error: errorMessage
-    });
-    process.exit(1);
+
+    // If the error is a 400 from the API (e.g. corrupted image in session history),
+    // retry once without session resume so the agent starts fresh.
+    if (sessionId && /\b400\b/.test(errorMessage) && /invalid_request_error|Could not process/.test(errorMessage)) {
+      log('Detected corrupted session (likely stale image data). Retrying without session resume...');
+      sessionId = undefined;
+      resumeAt = undefined;
+      try {
+        const retryResult = await runQuery(prompt, undefined, mcpServerPath, containerInput, sdkEnv);
+        if (retryResult.newSessionId) {
+          sessionId = retryResult.newSessionId;
+        }
+        writeOutput({ status: 'success', result: null, newSessionId: sessionId });
+        // Don't process.exit — fall through to normal exit
+      } catch (retryErr) {
+        const retryMsg = retryErr instanceof Error ? retryErr.message : String(retryErr);
+        log(`Retry without session also failed: ${retryMsg}`);
+        writeOutput({
+          status: 'error',
+          result: null,
+          error: retryMsg,
+        });
+        process.exit(1);
+      }
+    } else {
+      writeOutput({
+        status: 'error',
+        result: null,
+        newSessionId: sessionId,
+        error: errorMessage
+      });
+      process.exit(1);
+    }
   }
 }
 

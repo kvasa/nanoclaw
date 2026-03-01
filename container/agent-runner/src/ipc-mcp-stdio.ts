@@ -63,6 +63,77 @@ server.tool(
 );
 
 server.tool(
+  'send_file',
+  'Send a file (image, chart, document, etc.) to the user or group. The file must exist in /workspace/group/. Use this after generating charts, images, or any files the user should receive.',
+  {
+    file_path: z
+      .string()
+      .describe(
+        'Absolute path to the file inside the container (must start with /workspace/group/)',
+      ),
+    filename: z
+      .string()
+      .optional()
+      .describe(
+        'Override the filename shown to the recipient. Defaults to the file basename.',
+      ),
+    initial_comment: z
+      .string()
+      .optional()
+      .describe('A text message to accompany the file upload'),
+    title: z.string().optional().describe('Title for the uploaded file'),
+  },
+  async (args) => {
+    // Validate path is within workspace
+    if (!args.file_path.startsWith('/workspace/group/')) {
+      return {
+        content: [
+          {
+            type: 'text' as const,
+            text: 'Error: file_path must start with /workspace/group/',
+          },
+        ],
+        isError: true,
+      };
+    }
+
+    // Check file exists
+    if (!fs.existsSync(args.file_path)) {
+      return {
+        content: [
+          {
+            type: 'text' as const,
+            text: `Error: file not found: ${args.file_path}`,
+          },
+        ],
+        isError: true,
+      };
+    }
+
+    const data: Record<string, string | object | undefined> = {
+      type: 'send_file',
+      chatJid,
+      filePath: args.file_path,
+      groupFolder,
+      timestamp: new Date().toISOString(),
+    };
+
+    // Add optional parameters
+    const options: Record<string, string> = {};
+    if (args.filename) options.filename = args.filename;
+    if (args.initial_comment) options.initialComment = args.initial_comment;
+    if (args.title) options.title = args.title;
+    if (Object.keys(options).length > 0) data.options = options;
+
+    writeIpcFile(MESSAGES_DIR, data);
+
+    return {
+      content: [{ type: 'text' as const, text: 'File sent.' }],
+    };
+  },
+);
+
+server.tool(
   'schedule_task',
   `Schedule a recurring or one-time task. The task will run as a full agent with access to all tools.
 

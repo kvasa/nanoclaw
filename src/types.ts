@@ -78,10 +78,17 @@ export interface TaskRunLog {
 
 // --- Channel abstraction ---
 
+export interface SendFileOptions {
+  filename?: string;
+  initialComment?: string;
+  title?: string;
+}
+
 export interface Channel {
   name: string;
   connect(): Promise<void>;
   sendMessage(jid: string, text: string): Promise<void>;
+  sendFile?(jid: string, filePath: string, options?: SendFileOptions): Promise<void>;
   isConnected(): boolean;
   ownsJid(jid: string): boolean;
   disconnect(): Promise<void>;

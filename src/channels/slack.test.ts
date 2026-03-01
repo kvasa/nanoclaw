@@ -42,6 +42,7 @@ vi.mock('@slack/bolt', () => ({
       chat: {
         postMessage: vi.fn().mockResolvedValue(undefined),
       },
+      filesUploadV2: vi.fn().mockResolvedValue({ files: [] }),
       conversations: {
         list: vi.fn().mockResolvedValue({
           channels: [],
@@ -78,6 +79,8 @@ vi.mock('../env.js', () => ({
     SLACK_APP_TOKEN: 'xapp-test-token',
   }),
 }));
+
+import fs from 'fs';
 
 import { SlackChannel, SlackChannelOpts } from './slack.js';
 import { updateChatName } from '../db.js';
@@ -688,6 +691,96 @@ describe('SlackChannel', () => {
         channel: 'C0123456789',
         text: 'Second queued',
       });
+    });
+  });
+
+  // --- sendFile ---
+
+  describe('sendFile', () => {
+    it('uploads file via filesUploadV2', async () => {
+      const opts = createTestOpts();
+      const channel = new SlackChannel(opts);
+      await channel.connect();
+
+      const testBuffer = Buffer.from('fake image data');
+      vi.spyOn(fs, 'readFileSync').mockReturnValueOnce(testBuffer);
+
+      await channel.sendFile('slack:C0123456789', '/tmp/test.png');
+
+      expect(currentApp().client.filesUploadV2).toHaveBeenCalledWith({
+        channel_id: 'C0123456789',
+        file: testBuffer,
+        filename: 'test.png',
+        title: undefined,
+        initial_comment: undefined,
+      });
+    });
+
+    it('passes optional parameters', async () => {
+      const opts = createTestOpts();
+      const channel = new SlackChannel(opts);
+      await channel.connect();
+
+      const testBuffer = Buffer.from('file data');
+      vi.spyOn(fs, 'readFileSync').mockReturnValueOnce(testBuffer);
+
+      await channel.sendFile('slack:C0123456789', '/tmp/test.png', {
+        filename: 'custom.png',
+        initialComment: 'Here you go',
+        title: 'Chart',
+      });
+
+      expect(currentApp().client.filesUploadV2).toHaveBeenCalledWith({
+        channel_id: 'C0123456789',
+        file: testBuffer,
+        filename: 'custom.png',
+        title: 'Chart',
+        initial_comment: 'Here you go',
+      });
+    });
+
+    it('uses basename as default filename', async () => {
+      const opts = createTestOpts();
+      const channel = new SlackChannel(opts);
+      await channel.connect();
+
+      const testBuffer = Buffer.from('chart data');
+      vi.spyOn(fs, 'readFileSync').mockReturnValueOnce(testBuffer);
+
+      await channel.sendFile(
+        'slack:C0123456789',
+        '/workspace/group/output/chart.png',
+      );
+
+      expect(currentApp().client.filesUploadV2).toHaveBeenCalledWith(
+        expect.objectContaining({ filename: 'chart.png' }),
+      );
+    });
+
+    it('skips send when disconnected', async () => {
+      const opts = createTestOpts();
+      const channel = new SlackChannel(opts);
+
+      // Don't connect
+      await channel.sendFile('slack:C0123456789', '/tmp/test.png');
+
+      expect(currentApp().client.filesUploadV2).not.toHaveBeenCalled();
+    });
+
+    it('does not throw on upload failure', async () => {
+      const opts = createTestOpts();
+      const channel = new SlackChannel(opts);
+      await channel.connect();
+
+      const testBuffer = Buffer.from('file data');
+      vi.spyOn(fs, 'readFileSync').mockReturnValueOnce(testBuffer);
+      currentApp().client.filesUploadV2.mockRejectedValueOnce(
+        new Error('Upload failed'),
+      );
+
+      await expect(
+        channel.sendFile('slack:C0123456789', '/tmp/test.png'),
+      ).resolves.toBeUndefined();
     });
   });
 
