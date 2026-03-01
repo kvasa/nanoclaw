@@ -9,6 +9,7 @@ import { updateChatName } from '../db.js';
 import { readEnvFile } from '../env.js';
 import { resolveGroupFolderPath } from '../group-folder.js';
 import { logger } from '../logger.js';
+import { transcribeBuffer } from '../transcription.js';
 import {
   Channel,
   OnInboundMessage,
@@ -139,6 +140,15 @@ export class SlackChannel implements Channel {
       if (files && files.length > 0) {
         const group = groups[jid];
         const descriptions = await this.downloadFiles(files, group);
+
+        // Send voice transcripts to channel so users can see what was said
+        for (const desc of descriptions) {
+          const match = desc.match(/^\[Voice: (.+)\]$/s);
+          if (match) {
+            await this.sendMessage(jid, `Transcript: ${match[1]}`);
+          }
+        }
+
         content = content
           ? `${content}\n${descriptions.join('\n')}`
           : descriptions.join('\n');
@@ -267,7 +277,11 @@ export class SlackChannel implements Channel {
     // no-op: Slack Bot API has no typing indicator endpoint
   }
 
-  async addReaction(jid: string, messageId: string, emoji: string): Promise<void> {
+  async addReaction(
+    jid: string,
+    messageId: string,
+    emoji: string,
+  ): Promise<void> {
     if (!this.connected) return;
     const channelId = jid.replace(/^slack:/, '');
     try {
@@ -279,12 +293,19 @@ export class SlackChannel implements Channel {
     } catch (err) {
       const errorCode = (err as { data?: { error?: string } })?.data?.error;
       if (errorCode !== 'already_reacted') {
-        logger.warn({ jid, messageId, emoji, err }, 'Failed to add Slack reaction');
+        logger.warn(
+          { jid, messageId, emoji, err },
+          'Failed to add Slack reaction',
+        );
       }
     }
   }
 
-  async removeReaction(jid: string, messageId: string, emoji: string): Promise<void> {
+  async removeReaction(
+    jid: string,
+    messageId: string,
+    emoji: string,
+  ): Promise<void> {
     if (!this.connected) return;
     const channelId = jid.replace(/^slack:/, '');
     try {
@@ -296,7 +317,10 @@ export class SlackChannel implements Channel {
     } catch (err) {
       const errorCode = (err as { data?: { error?: string } })?.data?.error;
       if (errorCode !== 'no_reaction') {
-        logger.warn({ jid, messageId, emoji, err }, 'Failed to remove Slack reaction');
+        logger.warn(
+          { jid, messageId, emoji, err },
+          'Failed to remove Slack reaction',
+        );
       }
     }
   }
@@ -383,6 +407,23 @@ export class SlackChannel implements Channel {
         fs.writeFileSync(path.join(uploadDir, filename), buffer);
 
         const containerPath = `/workspace/group/slack-uploads/${filename}`;
+
+        if (typeLabel === 'Audio') {
+          try {
+            const transcript = await transcribeBuffer(buffer, name, mime);
+            if (transcript) {
+              descriptions.push(`[Voice: ${transcript}]`);
+              logger.info(
+                { name, size: buffer.length, transcriptLength: transcript.length },
+                'Slack audio transcribed',
+              );
+              continue;
+            }
+          } catch (err) {
+            logger.warn({ name, err }, 'Slack audio transcription failed');
+          }
+        }
+
         descriptions.push(`[${typeLabel} attached: ${containerPath}]`);
         logger.info(
           { name, size: buffer.length, path: containerPath },

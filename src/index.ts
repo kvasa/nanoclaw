@@ -285,7 +285,9 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
   if (idleTimer) clearTimeout(idleTimer);
 
   // Fallback: if no streaming callback fired (e.g. container crashed), finalize reaction
-  await finalizeReaction(output === 'error' || hadError ? 'warning' : 'white_check_mark');
+  await finalizeReaction(
+    output === 'error' || hadError ? 'warning' : 'white_check_mark',
+  );
 
   if (output === 'error' || hadError) {
     // If we already sent output to the user, don't roll back the cursor —

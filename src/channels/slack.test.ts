@@ -23,6 +23,16 @@ vi.mock('../db.js', () => ({
   updateChatName: vi.fn(),
 }));
 
+// Mock transcription
+vi.mock('../transcription.js', () => ({
+  transcribeBuffer: vi.fn().mockResolvedValue('This is a transcribed voice message'),
+}));
+
+// Mock group-folder (used by downloadFiles)
+vi.mock('../group-folder.js', () => ({
+  resolveGroupFolderPath: vi.fn(() => '/tmp/test-groups/test-channel'),
+}));
+
 // --- @slack/bolt mock ---
 
 type Handler = (...args: any[]) => any;
@@ -89,6 +99,7 @@ import fs from 'fs';
 import { SlackChannel, SlackChannelOpts } from './slack.js';
 import { updateChatName } from '../db.js';
 import { readEnvFile } from '../env.js';
+import { transcribeBuffer } from '../transcription.js';
 
 // --- Test helpers ---
 
@@ -891,7 +902,11 @@ describe('SlackChannel', () => {
       const channel = new SlackChannel(opts);
       await channel.connect();
 
-      await channel.addReaction('slack:C0123456789', '1704067200.000000', 'eyes');
+      await channel.addReaction(
+        'slack:C0123456789',
+        '1704067200.000000',
+        'eyes',
+      );
 
       expect(currentApp().client.reactions.add).toHaveBeenCalledWith({
         channel: 'C0123456789',
@@ -905,7 +920,11 @@ describe('SlackChannel', () => {
       const channel = new SlackChannel(opts);
       await channel.connect();
 
-      await channel.addReaction('slack:D9876543210', '1704067200.000000', 'thumbsup');
+      await channel.addReaction(
+        'slack:D9876543210',
+        '1704067200.000000',
+        'thumbsup',
+      );
 
       expect(currentApp().client.reactions.add).toHaveBeenCalledWith({
         channel: 'D9876543210',
@@ -919,7 +938,11 @@ describe('SlackChannel', () => {
       const channel = new SlackChannel(opts);
 
       // Don't connect
-      await channel.addReaction('slack:C0123456789', '1704067200.000000', 'eyes');
+      await channel.addReaction(
+        'slack:C0123456789',
+        '1704067200.000000',
+        'eyes',
+      );
 
       expect(currentApp().client.reactions.add).not.toHaveBeenCalled();
     });
@@ -949,7 +972,11 @@ describe('SlackChannel', () => {
         data: { error: 'already_reacted' },
       });
 
-      await channel.addReaction('slack:C0123456789', '1704067200.000000', 'eyes');
+      await channel.addReaction(
+        'slack:C0123456789',
+        '1704067200.000000',
+        'eyes',
+      );
 
       expect(logger.warn).not.toHaveBeenCalledWith(
         expect.objectContaining({ emoji: 'eyes' }),
@@ -966,7 +993,11 @@ describe('SlackChannel', () => {
       const channel = new SlackChannel(opts);
       await channel.connect();
 
-      await channel.removeReaction('slack:C0123456789', '1704067200.000000', 'eyes');
+      await channel.removeReaction(
+        'slack:C0123456789',
+        '1704067200.000000',
+        'eyes',
+      );
 
       expect(currentApp().client.reactions.remove).toHaveBeenCalledWith({
         channel: 'C0123456789',
@@ -980,7 +1011,11 @@ describe('SlackChannel', () => {
       const channel = new SlackChannel(opts);
       await channel.connect();
 
-      await channel.removeReaction('slack:D9876543210', '1704067200.000000', 'gear');
+      await channel.removeReaction(
+        'slack:D9876543210',
+        '1704067200.000000',
+        'gear',
+      );
 
       expect(currentApp().client.reactions.remove).toHaveBeenCalledWith({
         channel: 'D9876543210',
@@ -993,7 +1028,11 @@ describe('SlackChannel', () => {
       const opts = createTestOpts();
       const channel = new SlackChannel(opts);
 
-      await channel.removeReaction('slack:C0123456789', '1704067200.000000', 'eyes');
+      await channel.removeReaction(
+        'slack:C0123456789',
+        '1704067200.000000',
+        'eyes',
+      );
 
       expect(currentApp().client.reactions.remove).not.toHaveBeenCalled();
     });
@@ -1008,7 +1047,11 @@ describe('SlackChannel', () => {
       );
 
       await expect(
-        channel.removeReaction('slack:C0123456789', '1704067200.000000', 'eyes'),
+        channel.removeReaction(
+          'slack:C0123456789',
+          '1704067200.000000',
+          'eyes',
+        ),
       ).resolves.toBeUndefined();
     });
 
@@ -1023,7 +1066,11 @@ describe('SlackChannel', () => {
         data: { error: 'no_reaction' },
       });
 
-      await channel.removeReaction('slack:C0123456789', '1704067200.000000', 'eyes');
+      await channel.removeReaction(
+        'slack:C0123456789',
+        '1704067200.000000',
+        'eyes',
+      );
 
       expect(logger.warn).not.toHaveBeenCalledWith(
         expect.objectContaining({ emoji: 'eyes' }),
@@ -1097,6 +1144,238 @@ describe('SlackChannel', () => {
     it('has name "slack"', () => {
       const channel = new SlackChannel(createTestOpts());
       expect(channel.name).toBe('slack');
+    });
+  });
+
+  // --- Voice message transcription ---
+
+  describe('voice message transcription', () => {
+    beforeEach(() => {
+      vi.spyOn(fs, 'mkdirSync').mockReturnValue(undefined);
+      vi.spyOn(fs, 'writeFileSync').mockReturnValue(undefined);
+      vi.stubGlobal(
+        'fetch',
+        vi.fn().mockResolvedValue({
+          ok: true,
+          arrayBuffer: () => Promise.resolve(new ArrayBuffer(1024)),
+        }),
+      );
+    });
+
+    afterEach(() => {
+      vi.unstubAllGlobals();
+    });
+
+    it('transcribes audio files and returns [Voice: transcript]', async () => {
+      const opts = createTestOpts();
+      const channel = new SlackChannel(opts);
+      await channel.connect();
+
+      const event = {
+        ...createMessageEvent({ text: '' }),
+        files: [
+          {
+            name: 'voice-message.ogg',
+            mimetype: 'audio/ogg',
+            url_private_download: 'https://files.slack.com/voice.ogg',
+          },
+        ],
+        subtype: 'file_share',
+      };
+      await triggerMessageEvent(event);
+
+      expect(transcribeBuffer).toHaveBeenCalledWith(
+        expect.any(Buffer),
+        'voice-message.ogg',
+        'audio/ogg',
+      );
+      expect(opts.onMessage).toHaveBeenCalledWith(
+        'slack:C0123456789',
+        expect.objectContaining({
+          content: '[Voice: This is a transcribed voice message]',
+        }),
+      );
+    });
+
+    it('falls back to [Audio attached: ...] when transcription returns null', async () => {
+      vi.mocked(transcribeBuffer).mockResolvedValueOnce(null);
+
+      const opts = createTestOpts();
+      const channel = new SlackChannel(opts);
+      await channel.connect();
+
+      const event = {
+        ...createMessageEvent({ text: '' }),
+        files: [
+          {
+            name: 'voice.ogg',
+            mimetype: 'audio/ogg',
+            url_private_download: 'https://files.slack.com/voice.ogg',
+          },
+        ],
+        subtype: 'file_share',
+      };
+      await triggerMessageEvent(event);
+
+      expect(opts.onMessage).toHaveBeenCalledWith(
+        'slack:C0123456789',
+        expect.objectContaining({
+          content: expect.stringContaining('[Audio attached:'),
+        }),
+      );
+    });
+
+    it('falls back to [Audio attached: ...] when transcription throws', async () => {
+      vi.mocked(transcribeBuffer).mockRejectedValueOnce(
+        new Error('API error'),
+      );
+
+      const opts = createTestOpts();
+      const channel = new SlackChannel(opts);
+      await channel.connect();
+
+      const event = {
+        ...createMessageEvent({ text: '' }),
+        files: [
+          {
+            name: 'voice.ogg',
+            mimetype: 'audio/ogg',
+            url_private_download: 'https://files.slack.com/voice.ogg',
+          },
+        ],
+        subtype: 'file_share',
+      };
+      await triggerMessageEvent(event);
+
+      expect(opts.onMessage).toHaveBeenCalledWith(
+        'slack:C0123456789',
+        expect.objectContaining({
+          content: expect.stringContaining('[Audio attached:'),
+        }),
+      );
+    });
+
+    it('does not transcribe non-audio files', async () => {
+      const opts = createTestOpts();
+      const channel = new SlackChannel(opts);
+      await channel.connect();
+
+      const event = {
+        ...createMessageEvent({ text: '' }),
+        files: [
+          {
+            name: 'photo.jpg',
+            mimetype: 'image/jpeg',
+            url_private_download: 'https://files.slack.com/photo.jpg',
+          },
+        ],
+        subtype: 'file_share',
+      };
+      await triggerMessageEvent(event);
+
+      expect(transcribeBuffer).not.toHaveBeenCalled();
+      expect(opts.onMessage).toHaveBeenCalledWith(
+        'slack:C0123456789',
+        expect.objectContaining({
+          content: expect.stringContaining('[Image attached:'),
+        }),
+      );
+    });
+
+    it('still saves audio file to disk when transcription succeeds', async () => {
+      const opts = createTestOpts();
+      const channel = new SlackChannel(opts);
+      await channel.connect();
+
+      const event = {
+        ...createMessageEvent({ text: '' }),
+        files: [
+          {
+            name: 'voice.ogg',
+            mimetype: 'audio/ogg',
+            url_private_download: 'https://files.slack.com/voice.ogg',
+          },
+        ],
+        subtype: 'file_share',
+      };
+      await triggerMessageEvent(event);
+
+      expect(fs.writeFileSync).toHaveBeenCalled();
+    });
+
+    it('sends transcript to Slack channel before delivering message', async () => {
+      const opts = createTestOpts();
+      const channel = new SlackChannel(opts);
+      await channel.connect();
+
+      const event = {
+        ...createMessageEvent({ text: '' }),
+        files: [
+          {
+            name: 'voice.ogg',
+            mimetype: 'audio/ogg',
+            url_private_download: 'https://files.slack.com/voice.ogg',
+          },
+        ],
+        subtype: 'file_share',
+      };
+      await triggerMessageEvent(event);
+
+      // Transcript should be sent to Slack before onMessage fires
+      expect(currentApp().client.chat.postMessage).toHaveBeenCalledWith({
+        channel: 'C0123456789',
+        text: 'Transcript: This is a transcribed voice message',
+      });
+    });
+
+    it('does not send transcript when transcription fails', async () => {
+      vi.mocked(transcribeBuffer).mockResolvedValueOnce(null);
+
+      const opts = createTestOpts();
+      const channel = new SlackChannel(opts);
+      await channel.connect();
+
+      const event = {
+        ...createMessageEvent({ text: '' }),
+        files: [
+          {
+            name: 'voice.ogg',
+            mimetype: 'audio/ogg',
+            url_private_download: 'https://files.slack.com/voice.ogg',
+          },
+        ],
+        subtype: 'file_share',
+      };
+      await triggerMessageEvent(event);
+
+      expect(currentApp().client.chat.postMessage).not.toHaveBeenCalled();
+    });
+
+    it('includes text with transcribed audio when both are present', async () => {
+      const opts = createTestOpts();
+      const channel = new SlackChannel(opts);
+      await channel.connect();
+
+      const event = {
+        ...createMessageEvent({ text: 'Check this out' }),
+        files: [
+          {
+            name: 'voice.ogg',
+            mimetype: 'audio/ogg',
+            url_private_download: 'https://files.slack.com/voice.ogg',
+          },
+        ],
+        subtype: 'file_share',
+      };
+      await triggerMessageEvent(event);
+
+      expect(opts.onMessage).toHaveBeenCalledWith(
+        'slack:C0123456789',
+        expect.objectContaining({
+          content:
+            'Check this out\n[Voice: This is a transcribed voice message]',
+        }),
+      );
     });
   });
 });
