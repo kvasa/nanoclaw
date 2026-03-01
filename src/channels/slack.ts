@@ -257,6 +257,36 @@ export class SlackChannel implements Channel {
     }
   }
 
+  async sendVoice(
+    jid: string,
+    audioBuffer: Buffer,
+    caption?: string,
+  ): Promise<void> {
+    const channelId = jid.replace(/^slack:/, '');
+
+    if (!this.connected) {
+      logger.warn({ jid }, 'Slack disconnected, voice message skipped');
+      return;
+    }
+
+    try {
+      await this.app.client.filesUploadV2({
+        channel_id: channelId,
+        file: audioBuffer,
+        filename: `voice-${Date.now()}.mp3`,
+        title: 'Voice Message',
+        initial_comment: caption || undefined,
+      });
+
+      logger.info(
+        { jid, size: audioBuffer.length },
+        'Slack voice message uploaded',
+      );
+    } catch (err) {
+      logger.error({ jid, err }, 'Failed to upload Slack voice message');
+    }
+  }
+
   isConnected(): boolean {
     return this.connected;
   }

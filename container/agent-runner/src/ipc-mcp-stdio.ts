@@ -134,6 +134,77 @@ server.tool(
 );
 
 server.tool(
+  'send_voice_message',
+  `Generate a voice message from text using text-to-speech and send it to the chat as an audio message. The text is converted to speech on the host using OpenAI TTS.
+
+Use this when the user asks you to:
+- Read something aloud ("přečti to nahlas", "read it aloud", "say this out loud")
+- Send a voice message
+- Convert text to speech
+
+The text you provide will be spoken as-is, so write it naturally as you would speak it. Do not include formatting, markdown, or special characters.`,
+  {
+    text: z
+      .string()
+      .describe(
+        'The text to convert to speech and send as a voice message. Write naturally — this will be spoken aloud.',
+      ),
+    voice: z
+      .enum([
+        'alloy',
+        'ash',
+        'coral',
+        'echo',
+        'fable',
+        'onyx',
+        'nova',
+        'sage',
+        'shimmer',
+      ])
+      .optional()
+      .default('ash')
+      .describe('The TTS voice to use. Default: ash.'),
+    caption: z
+      .string()
+      .optional()
+      .describe(
+        'Optional text caption to accompany the voice message (sent as a separate text message on WhatsApp).',
+      ),
+  },
+  async (args) => {
+    if (!args.text.trim()) {
+      return {
+        content: [
+          { type: 'text' as const, text: 'Error: text cannot be empty.' },
+        ],
+        isError: true,
+      };
+    }
+
+    const data: Record<string, string | undefined> = {
+      type: 'send_voice',
+      chatJid,
+      text: args.text,
+      voice: args.voice || 'ash',
+      caption: args.caption || undefined,
+      groupFolder,
+      timestamp: new Date().toISOString(),
+    };
+
+    writeIpcFile(MESSAGES_DIR, data);
+
+    return {
+      content: [
+        {
+          type: 'text' as const,
+          text: 'Voice message queued for synthesis and delivery.',
+        },
+      ],
+    };
+  },
+);
+
+server.tool(
   'schedule_task',
   `Schedule a recurring or one-time task. The task will run as a full agent with access to all tools.
 

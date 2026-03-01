@@ -262,6 +262,35 @@ export class WhatsAppChannel implements Channel {
     }
   }
 
+  async sendVoice(
+    jid: string,
+    audioBuffer: Buffer,
+    caption?: string,
+  ): Promise<void> {
+    if (!this.connected) {
+      logger.warn({ jid }, 'WA disconnected, voice message skipped');
+      return;
+    }
+
+    try {
+      await this.sock.sendMessage(jid, {
+        audio: audioBuffer,
+        mimetype: 'audio/mpeg',
+        ptt: true,
+      });
+      logger.info(
+        { jid, size: audioBuffer.length },
+        'WhatsApp voice message sent',
+      );
+
+      if (caption) {
+        await this.sendMessage(jid, caption);
+      }
+    } catch (err) {
+      logger.error({ jid, err }, 'Failed to send WhatsApp voice message');
+    }
+  }
+
   isConnected(): boolean {
     return this.connected;
   }

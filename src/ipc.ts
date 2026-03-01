@@ -13,6 +13,7 @@ import { AvailableGroup } from './container-runner.js';
 import { createTask, deleteTask, getTaskById, updateTask } from './db.js';
 import { isValidGroupFolder } from './group-folder.js';
 import { logger } from './logger.js';
+import { synthesizeSpeech, TtsVoice } from './tts.js';
 import { RegisteredGroup, SendFileOptions } from './types.js';
 
 export interface IpcDeps {
@@ -22,6 +23,11 @@ export interface IpcDeps {
     filePath: string,
     groupFolder: string,
     options?: SendFileOptions,
+  ) => Promise<void>;
+  sendVoice: (
+    jid: string,
+    audioBuffer: Buffer,
+    caption?: string,
   ) => Promise<void>;
   registeredGroups: () => Record<string, RegisteredGroup>;
   registerGroup: (jid: string, group: RegisteredGroup) => void;
@@ -124,6 +130,47 @@ export function startIpcWatcher(deps: IpcDeps): void {
                   logger.warn(
                     { chatJid: data.chatJid, sourceGroup },
                     'Unauthorized IPC send_file attempt blocked',
+                  );
+                }
+              } else if (
+                data.type === 'send_voice' &&
+                data.chatJid &&
+                data.text
+              ) {
+                const targetGroup = registeredGroups[data.chatJid];
+                if (
+                  isMain ||
+                  (targetGroup && targetGroup.folder === sourceGroup)
+                ) {
+                  const audioBuffer = await synthesizeSpeech(
+                    data.text,
+                    data.voice as TtsVoice | undefined,
+                  );
+                  if (audioBuffer) {
+                    await deps.sendVoice(
+                      data.chatJid,
+                      audioBuffer,
+                      data.caption,
+                    );
+                    logger.info(
+                      {
+                        chatJid: data.chatJid,
+                        textLength: data.text.length,
+                        audioSize: audioBuffer.length,
+                        sourceGroup,
+                      },
+                      'IPC voice message sent',
+                    );
+                  } else {
+                    logger.warn(
+                      { chatJid: data.chatJid, sourceGroup },
+                      'TTS synthesis failed for voice message',
+                    );
+                  }
+                } else {
+                  logger.warn(
+                    { chatJid: data.chatJid, sourceGroup },
+                    'Unauthorized IPC send_voice attempt blocked',
                   );
                 }
               }

@@ -30,6 +30,18 @@ Use `mcp__nanoclaw__send_file` to send files (images, charts, documents) to the 
 
 Currently supported on Slack channels.
 
+### Voice Messages
+
+Use `mcp__nanoclaw__send_voice_message` to send a voice message (text-to-speech). The text you provide is converted to speech and sent as an audio/voice message.
+
+- `text` (required): the text to speak aloud — write naturally, no formatting
+- `voice` (optional): TTS voice name (default: `ash`). Options: alloy, ash, coral, echo, fable, onyx, nova, sage, shimmer
+- `caption` (optional): text message to accompany the voice note
+
+Use this when the user asks you to read something aloud ("přečti to nahlas", "read it aloud"), or when a voice message is the appropriate response format.
+
+Currently supported on WhatsApp (native voice message) and Slack (audio file upload).
+
 ### Internal thoughts
 
 If part of your output is internal reasoning rather than something for the user, wrap it in `<internal>` tags:
