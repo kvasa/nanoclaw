@@ -216,6 +216,14 @@ function buildContainerArgs(
   // Pass host timezone so container's local time matches the user's
   args.push('-e', `TZ=${TIMEZONE}`);
 
+  // Pass model and log detail level to agent-runner
+  if (process.env.CLAUDE_MODEL) {
+    args.push('-e', `CLAUDE_MODEL=${process.env.CLAUDE_MODEL}`);
+  }
+  if (process.env.LLM_LOG_DETAIL) {
+    args.push('-e', `LLM_LOG_DETAIL=${process.env.LLM_LOG_DETAIL}`);
+  }
+
   // Run as host user so bind-mounted files are accessible.
   // Skip when running as root (uid 0), as the container's node user (uid 1000),
   // or when getuid is unavailable (native Windows without WSL).
@@ -521,6 +529,15 @@ export async function runContainerAgent(
           mounts
             .map((m) => `${m.containerPath}${m.readonly ? ' (ro)' : ''}`)
             .join('\n'),
+          ``,
+        );
+      }
+
+      // Always include agent-runner stderr (LLM communication logs)
+      if (stderr.trim()) {
+        logLines.push(
+          `=== LLM Communication${stderrTruncated ? ' (TRUNCATED)' : ''} ===`,
+          stderr,
           ``,
         );
       }

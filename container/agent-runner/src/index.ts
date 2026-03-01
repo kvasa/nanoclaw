@@ -55,6 +55,10 @@ interface SDKUserMessage {
   session_id: string;
 }
 
+const CLAUDE_MODEL = process.env.CLAUDE_MODEL || 'claude-sonnet-4-6';
+const LLM_LOG_DETAIL = process.env.LLM_LOG_DETAIL || 'summary';
+const LLM_LOG_FULL = LLM_LOG_DETAIL === 'full';
+
 const IPC_INPUT_DIR = '/workspace/ipc/input';
 const IPC_INPUT_CLOSE_SENTINEL = path.join(IPC_INPUT_DIR, '_close');
 const IPC_POLL_MS = 500;
@@ -414,9 +418,13 @@ async function runQuery(
     log(`Additional directories: ${extraDirs.join(', ')}`);
   }
 
+  log(`[prompt] ${LLM_LOG_FULL ? containerInput.prompt : containerInput.prompt.slice(0, 500)}`);
+  log(`[config] model=${CLAUDE_MODEL} LLM_LOG_DETAIL=${LLM_LOG_DETAIL} session=${containerInput.sessionId || 'new'}`);
+
   for await (const message of query({
     prompt: stream,
     options: {
+      model: CLAUDE_MODEL,
       cwd: '/workspace/group',
       additionalDirectories: extraDirs.length > 0 ? extraDirs : undefined,
       resume: sessionId,
@@ -459,23 +467,29 @@ async function runQuery(
     const msgType = message.type === 'system' ? `system/${(message as { subtype?: string }).subtype}` : message.type;
     log(`[msg #${messageCount}] type=${msgType}`);
 
-    // Verbose logging of message content
+    // Verbose logging of message content (detail controlled by LLM_LOG_DETAIL)
+    const truncText = (s: string) => LLM_LOG_FULL ? s : s.slice(0, 500);
+    const truncData = (s: string) => LLM_LOG_FULL ? s : s.slice(0, 300);
+
     if (message.type === 'assistant') {
       const msg = message as Record<string, unknown>;
       if (msg.content && Array.isArray(msg.content)) {
         for (const block of msg.content) {
           if (block.type === 'text') {
-            log(`  [assistant] text: ${(block.text as string).slice(0, 500)}`);
+            log(`  [assistant] text: ${truncText(block.text as string)}`);
           } else if (block.type === 'tool_use') {
-            const input = JSON.stringify(block.input ?? {}).slice(0, 300);
+            const input = truncData(JSON.stringify(block.input ?? {}));
             log(`  [assistant] tool_use: ${block.name} ${input}`);
+            if (block.name === 'Skill') {
+              log(`  [skill] loaded: ${JSON.stringify(block.input)}`);
+            }
           } else if (block.type === 'tool_result') {
-            const content = typeof block.content === 'string' ? block.content.slice(0, 300) : JSON.stringify(block.content ?? '').slice(0, 300);
+            const content = typeof block.content === 'string' ? truncData(block.content) : truncData(JSON.stringify(block.content ?? ''));
             log(`  [assistant] tool_result: ${content}`);
           }
         }
       } else if (typeof msg.content === 'string') {
-        log(`  [assistant] ${msg.content.slice(0, 500)}`);
+        log(`  [assistant] ${truncText(msg.content)}`);
       }
     }
 
@@ -484,14 +498,14 @@ async function runQuery(
       if (msg.content && Array.isArray(msg.content)) {
         for (const block of msg.content) {
           if (block.type === 'tool_result') {
-            const content = typeof block.content === 'string' ? block.content.slice(0, 300) : JSON.stringify(block.content ?? '').slice(0, 300);
+            const content = typeof block.content === 'string' ? truncData(block.content) : truncData(JSON.stringify(block.content ?? ''));
             log(`  [tool_result] ${block.tool_use_id ? `(${(block.tool_use_id as string).slice(-8)}) ` : ''}${content}`);
           } else if (block.type === 'text') {
-            log(`  [user] ${(block.text as string).slice(0, 500)}`);
+            log(`  [user] ${truncText(block.text as string)}`);
           }
         }
       } else if (typeof msg.content === 'string') {
-        log(`  [user] ${msg.content.slice(0, 500)}`);
+        log(`  [user] ${truncText(msg.content)}`);
       }
     }
 
