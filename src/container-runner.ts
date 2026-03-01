@@ -199,6 +199,16 @@ function buildVolumeMounts(
     readonly: false,
   });
 
+  // Backups directory (read-only for all agents)
+  const backupsDir = path.join(projectRoot, 'backups');
+  if (fs.existsSync(backupsDir)) {
+    mounts.push({
+      hostPath: backupsDir,
+      containerPath: '/workspace/backups',
+      readonly: true,
+    });
+  }
+
   // Additional mounts validated against external allowlist (tamper-proof from containers)
   if (group.containerConfig?.additionalMounts) {
     const validatedMounts = validateAdditionalMounts(
