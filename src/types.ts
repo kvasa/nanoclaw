@@ -93,11 +93,7 @@ export interface Channel {
     filePath: string,
     options?: SendFileOptions,
   ): Promise<void>;
-  sendVoice?(
-    jid: string,
-    audioBuffer: Buffer,
-    caption?: string,
-  ): Promise<void>;
+  sendVoice?(jid: string, audioBuffer: Buffer, caption?: string): Promise<void>;
   isConnected(): boolean;
   ownsJid(jid: string): boolean;
   disconnect(): Promise<void>;

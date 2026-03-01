@@ -597,11 +597,7 @@ async function main(): Promise<void> {
       if (!channel) throw new Error(`No channel for JID: ${jid}`);
       return channel.sendMessage(jid, text);
     },
-    sendVoice: async (
-      jid: string,
-      audioBuffer: Buffer,
-      caption?: string,
-    ) => {
+    sendVoice: async (jid: string, audioBuffer: Buffer, caption?: string) => {
       const channel = findChannel(channels, jid);
       if (!channel) throw new Error(`No channel for JID: ${jid}`);
       if (!channel.sendVoice) {
