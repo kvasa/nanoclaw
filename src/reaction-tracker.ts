@@ -37,10 +37,7 @@ export class ReactionTracker {
       try {
         await this.channel.removeReaction?.(this.jid, this.msgId!, 'eyes');
       } catch (err) {
-        logger.debug(
-          { err, jid: this.jid },
-          'Failed to remove eyes reaction',
-        );
+        logger.debug({ err, jid: this.jid }, 'Failed to remove eyes reaction');
       }
       if (this.currentEmoji !== 'eyes') return; // finalized while removing
       this.currentEmoji = 'gear';
