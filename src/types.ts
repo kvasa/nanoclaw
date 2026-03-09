@@ -39,6 +39,7 @@ export interface RegisteredGroup {
   added_at: string;
   containerConfig?: ContainerConfig;
   requiresTrigger?: boolean; // Default: true for groups, false for solo chats
+  isMain?: boolean; // True for the main control group (no trigger, elevated privileges)
 }
 
 export interface NewMessage {
@@ -103,6 +104,8 @@ export interface Channel {
   addReaction?(jid: string, messageId: string, emoji: string): Promise<void>;
   // Optional: remove emoji reaction from a message (e.g. Slack reactions.remove)
   removeReaction?(jid: string, messageId: string, emoji: string): Promise<void>;
+  // Optional: sync group/chat names from the platform.
+  syncGroups?(force: boolean): Promise<void>;
 }
 
 // Callback type that channels use to deliver inbound messages
@@ -110,7 +113,7 @@ export type OnInboundMessage = (chatJid: string, message: NewMessage) => void;
 
 // Callback for chat metadata discovery.
 // name is optional — channels that deliver names inline (Telegram) pass it here;
-// channels that sync names separately (WhatsApp syncGroupMetadata) omit it.
+// channels that sync names separately (via syncGroups) omit it.
 export type OnChatMetadata = (
   chatJid: string,
   timestamp: string,
