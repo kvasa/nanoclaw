@@ -29,6 +29,7 @@ import {
 } from './container-runtime.js';
 import { detectAuthMode } from './credential-proxy.js';
 import { validateAdditionalMounts } from './mount-security.js';
+import { ContainerOutputSchema } from './schemas.js';
 import { RegisteredGroup } from './types.js';
 
 // Sentinel markers for robust output parsing (must match agent-runner)
@@ -392,7 +393,7 @@ export async function runContainerAgent(
           parseBuffer = parseBuffer.slice(endIdx + OUTPUT_END_MARKER.length);
 
           try {
-            const parsed: ContainerOutput = JSON.parse(jsonStr);
+            const parsed = ContainerOutputSchema.parse(JSON.parse(jsonStr));
             if (parsed.newSessionId) {
               newSessionId = parsed.newSessionId;
             }
@@ -617,7 +618,7 @@ export async function runContainerAgent(
           jsonLine = lines[lines.length - 1];
         }
 
-        const output: ContainerOutput = JSON.parse(jsonLine);
+        const output = ContainerOutputSchema.parse(JSON.parse(jsonLine));
 
         logger.info(
           {

@@ -640,14 +640,14 @@ describe('schedule_task context_mode', () => {
     expect(tasks[0].context_mode).toBe('isolated');
   });
 
-  it('defaults invalid context_mode to isolated', async () => {
+  it('rejects invalid context_mode via schema validation', async () => {
     await processTaskIpc(
       {
         type: 'schedule_task',
         prompt: 'bad context',
         schedule_type: 'once',
         schedule_value: '2025-06-01T00:00:00',
-        context_mode: 'bogus' as any,
+        context_mode: 'bogus',
         targetJid: 'other@g.us',
       },
       'whatsapp_main',
@@ -655,8 +655,9 @@ describe('schedule_task context_mode', () => {
       deps,
     );
 
+    // Invalid context_mode is now rejected by Zod schema validation
     const tasks = getAllTasks();
-    expect(tasks[0].context_mode).toBe('isolated');
+    expect(tasks.length).toBe(0);
   });
 
   it('defaults missing context_mode to isolated', async () => {
