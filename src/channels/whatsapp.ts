@@ -405,3 +405,7 @@ export class WhatsAppChannel implements Channel {
     }
   }
 }
+
+import { registerChannel } from './registry.js';
+
+registerChannel('whatsapp', (opts) => new WhatsAppChannel(opts));

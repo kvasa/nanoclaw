@@ -516,3 +516,11 @@ export class SlackChannel implements Channel {
     }
   }
 }
+
+import { registerChannel } from './registry.js';
+
+registerChannel('slack', (opts) => {
+  const env = readEnvFile(['SLACK_BOT_TOKEN', 'SLACK_APP_TOKEN']);
+  if (!env.SLACK_BOT_TOKEN || !env.SLACK_APP_TOKEN) return null;
+  return new SlackChannel(opts);
+});

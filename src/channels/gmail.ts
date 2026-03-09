@@ -348,3 +348,11 @@ export class GmailChannel implements Channel {
     return '';
   }
 }
+
+import { registerChannel } from './registry.js';
+
+registerChannel('gmail', (opts) => {
+  const credPath = path.join(os.homedir(), '.gmail-mcp', 'credentials.json');
+  if (!fs.existsSync(credPath)) return null;
+  return new GmailChannel(opts);
+});
