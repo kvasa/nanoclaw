@@ -7,7 +7,6 @@ import {
   DATA_DIR,
   IDLE_TIMEOUT,
   POLL_INTERVAL,
-  REACTION_TRANSITION_DELAY_MS,
   TIMEZONE,
   TRIGGER_PATTERN,
 } from './config.js';
@@ -62,6 +61,7 @@ import {
   SendFileOptions,
 } from './types.js';
 import { logger } from './logger.js';
+import { ReactionTracker } from './reaction-tracker.js';
 
 // Re-export for backwards compatibility during refactor
 export { escapeXml, formatMessages } from './router.js';
@@ -145,26 +145,6 @@ function findLastUserMessageId(messages: NewMessage[]): string | undefined {
   return undefined;
 }
 
-/** Swap one reaction for another on a message. */
-async function swapReaction(
-  channel: Channel,
-  jid: string,
-  msgId: string,
-  remove: string,
-  add: string,
-): Promise<void> {
-  try {
-    await channel.removeReaction?.(jid, msgId, remove);
-  } catch (err) {
-    logger.debug({ err, jid, msgId }, 'Failed to remove reaction');
-  }
-  try {
-    await channel.addReaction?.(jid, msgId, add);
-  } catch (err) {
-    logger.debug({ err, jid, msgId }, 'Failed to add reaction');
-  }
-}
-
 /**
  * Process all pending messages for a group.
  * Called by the GroupQueue when it's this group's turn.
@@ -231,59 +211,10 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
 
   await channel.setTyping?.(chatJid, true);
   const reactedMsgId = findLastUserMessageId(missedMessages);
-  let gearTimerId: ReturnType<typeof setTimeout> | null = null;
-  // Tracks which emoji is currently shown — serializes timer vs finalize access
-  let currentReaction: string | null = null;
-  if (reactedMsgId) {
-    try {
-      await channel.addReaction?.(chatJid, reactedMsgId, 'eyes');
-      currentReaction = 'eyes';
-    } catch (err) {
-      logger.debug({ err, chatJid }, 'Failed to add eyes reaction');
-    }
-    // eyes → gear after short delay so user sees the progression
-    gearTimerId = setTimeout(async () => {
-      if (currentReaction !== 'eyes') return; // already finalized
-      try {
-        await channel.removeReaction?.(chatJid, reactedMsgId, 'eyes');
-      } catch (err) {
-        logger.debug({ err, chatJid }, 'Failed to remove eyes reaction');
-      }
-      if (currentReaction !== 'eyes') return; // finalized while removing
-      currentReaction = 'gear';
-      try {
-        await channel.addReaction?.(chatJid, reactedMsgId, 'gear');
-      } catch (err) {
-        logger.debug({ err, chatJid }, 'Failed to add gear reaction');
-      }
-    }, REACTION_TRANSITION_DELAY_MS);
-  }
+  const reaction = new ReactionTracker(channel, chatJid, reactedMsgId);
+  await reaction.start();
   let hadError = false;
   let outputSentToUser = false;
-  let reactionFinalized = false;
-
-  const finalizeReaction = async (emoji: string) => {
-    if (!reactedMsgId || reactionFinalized) return;
-    reactionFinalized = true;
-    if (gearTimerId) clearTimeout(gearTimerId);
-    const removing = currentReaction;
-    currentReaction = null; // signal to timer callback to bail out
-    if (removing) {
-      try {
-        await channel.removeReaction?.(chatJid, reactedMsgId, removing);
-      } catch (err) {
-        logger.debug(
-          { err, chatJid },
-          'Failed to remove reaction during finalize',
-        );
-      }
-    }
-    try {
-      await channel.addReaction?.(chatJid, reactedMsgId, emoji);
-    } catch (err) {
-      logger.debug({ err, chatJid, emoji }, 'Failed to add final reaction');
-    }
-  };
 
   const output = await runAgent(group, prompt, chatJid, async (result) => {
     // Streaming output callback — called for each agent result
@@ -299,14 +230,14 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
         await channel.sendMessage(chatJid, text);
         outputSentToUser = true;
       }
-      await finalizeReaction('white_check_mark');
+      await reaction.finalize('white_check_mark');
       // Only reset idle timer on actual results, not session-update markers (result: null)
       resetIdleTimer();
     }
 
     if (result.status === 'error') {
       hadError = true;
-      await finalizeReaction('warning');
+      await reaction.finalize('warning');
     }
   });
 
@@ -314,7 +245,7 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
   if (idleTimer) clearTimeout(idleTimer);
 
   // Fallback: if no streaming callback fired (e.g. container crashed), finalize reaction
-  await finalizeReaction(
+  await reaction.finalize(
     output === 'error' || hadError ? 'warning' : 'white_check_mark',
   );
 
