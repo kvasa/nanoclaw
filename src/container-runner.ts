@@ -14,7 +14,6 @@ import {
   DATA_DIR,
   GROUPS_DIR,
   IDLE_TIMEOUT,
-  LOG_LEVEL,
   TIMEZONE,
 } from './config.js';
 import { readEnvFile } from './env.js';
@@ -506,62 +505,30 @@ export async function runContainerAgent(
 
       const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
       const logFile = path.join(logsDir, `container-${timestamp}.log`);
-      const isVerbose = LOG_LEVEL === 'debug' || LOG_LEVEL === 'trace';
 
       const logLines = [
         `=== Container Run Log ===`,
         `Timestamp: ${new Date().toISOString()}`,
         `Group: ${group.name}`,
-        `IsMain: ${input.isMain}`,
         `Duration: ${duration}ms`,
         `Exit Code: ${code}`,
-        `Stdout Truncated: ${stdoutTruncated}`,
-        `Stderr Truncated: ${stderrTruncated}`,
         ``,
       ];
 
       const isError = code !== 0;
 
-      if (isVerbose || isError) {
+      if (isError) {
         logLines.push(
           `=== Input ===`,
           JSON.stringify(input, null, 2),
           ``,
-          `=== Container Args ===`,
-          containerArgs.join(' '),
-          ``,
-          `=== Mounts ===`,
-          mounts
-            .map(
-              (m) =>
-                `${m.hostPath} -> ${m.containerPath}${m.readonly ? ' (ro)' : ''}`,
-            )
-            .join('\n'),
-          ``,
-          `=== Stderr${stderrTruncated ? ' (TRUNCATED)' : ''} ===`,
-          stderr,
-          ``,
-          `=== Stdout${stdoutTruncated ? ' (TRUNCATED)' : ''} ===`,
-          stdout,
-        );
-      } else {
-        logLines.push(
-          `=== Input Summary ===`,
-          `Prompt length: ${input.prompt.length} chars`,
-          `Session ID: ${input.sessionId || 'new'}`,
-          ``,
-          `=== Mounts ===`,
-          mounts
-            .map((m) => `${m.containerPath}${m.readonly ? ' (ro)' : ''}`)
-            .join('\n'),
-          ``,
         );
       }
 
-      // Always include agent-runner stderr (LLM communication logs)
+      // Agent-runner stderr contains the LLM communication logs
       if (stderr.trim()) {
         logLines.push(
-          `=== LLM Communication${stderrTruncated ? ' (TRUNCATED)' : ''} ===`,
+          `=== Agent Log${stderrTruncated ? ' (TRUNCATED)' : ''} ===`,
           stderr,
           ``,
         );
@@ -570,7 +537,7 @@ export async function runContainerAgent(
       try {
         fs.mkdirSync(logsDir, { recursive: true });
         fs.writeFileSync(logFile, logLines.join('\n'));
-        logger.debug({ logFile, verbose: isVerbose }, 'Container log written');
+        logger.debug({ logFile }, 'Container log written');
       } catch (err) {
         logger.error(
           { err, group: group.name, logFile },

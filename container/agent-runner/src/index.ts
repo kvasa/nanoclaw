@@ -418,8 +418,8 @@ async function runQuery(
     log(`Additional directories: ${extraDirs.join(', ')}`);
   }
 
-  log(`[prompt] ${LLM_LOG_FULL ? containerInput.prompt : containerInput.prompt.slice(0, 500)}`);
-  log(`[config] model=${CLAUDE_MODEL} LLM_LOG_DETAIL=${LLM_LOG_DETAIL} session=${containerInput.sessionId || 'new'}`);
+  log(`[config] model=${CLAUDE_MODEL} session=${containerInput.sessionId || 'new'}`);
+  log(`[prompt] ${containerInput.prompt}`);
 
   for await (const message of query({
     prompt: stream,
@@ -469,52 +469,35 @@ async function runQuery(
     }
   })) {
     messageCount++;
-    const msgType = message.type === 'system' ? `system/${(message as { subtype?: string }).subtype}` : message.type;
-    log(`[msg #${messageCount}] type=${msgType}`);
-    if (LLM_LOG_FULL) {
-      log(`[msg #${messageCount}] raw: ${JSON.stringify(message)}`);
+
+    // Clean logging: show prompts and responses, skip noise
+    const trunc = (s: string, max = 500) => LLM_LOG_FULL ? s : (s.length > max ? s.slice(0, max) + '…' : s);
+    const inner = (message as Record<string, unknown>).message as Record<string, unknown> | undefined;
+    const content = inner?.content ?? (message as Record<string, unknown>).content;
+
+    if (message.type === 'assistant' && Array.isArray(content)) {
+      for (const block of content) {
+        if (block.type === 'text' && block.text) {
+          log(`[assistant] ${trunc(block.text as string)}`);
+        } else if (block.type === 'tool_use') {
+          log(`[tool_call] ${block.name}(${trunc(JSON.stringify(block.input ?? {}), 300)})`);
+        }
+      }
+    } else if (message.type === 'assistant' && typeof content === 'string') {
+      log(`[assistant] ${trunc(content as string)}`);
     }
 
-    // Verbose logging of message content (detail controlled by LLM_LOG_DETAIL)
-    const truncText = (s: string) => LLM_LOG_FULL ? s : s.slice(0, 500);
-    const truncData = (s: string) => LLM_LOG_FULL ? s : s.slice(0, 300);
-
-    if (message.type === 'assistant') {
-      const msg = message as Record<string, unknown>;
-      if (msg.content && Array.isArray(msg.content)) {
-        for (const block of msg.content) {
-          if (block.type === 'text') {
-            log(`  [assistant] text: ${truncText(block.text as string)}`);
-          } else if (block.type === 'tool_use') {
-            const input = truncData(JSON.stringify(block.input ?? {}));
-            log(`  [assistant] tool_use: ${block.name} ${input}`);
-            if (block.name === 'Skill') {
-              log(`  [skill] loaded: ${JSON.stringify(block.input)}`);
-            }
-          } else if (block.type === 'tool_result') {
-            const content = typeof block.content === 'string' ? truncData(block.content) : truncData(JSON.stringify(block.content ?? ''));
-            log(`  [assistant] tool_result: ${content}`);
-          }
+    if (message.type === 'user' && Array.isArray(content)) {
+      for (const block of content) {
+        if (block.type === 'tool_result') {
+          const body = typeof block.content === 'string' ? block.content : JSON.stringify(block.content ?? '');
+          log(`[tool_result] ${trunc(body, 300)}`);
+        } else if (block.type === 'text') {
+          log(`[user] ${trunc(block.text as string)}`);
         }
-      } else if (typeof msg.content === 'string') {
-        log(`  [assistant] ${truncText(msg.content)}`);
       }
-    }
-
-    if (message.type === 'user') {
-      const msg = message as Record<string, unknown>;
-      if (msg.content && Array.isArray(msg.content)) {
-        for (const block of msg.content) {
-          if (block.type === 'tool_result') {
-            const content = typeof block.content === 'string' ? truncData(block.content) : truncData(JSON.stringify(block.content ?? ''));
-            log(`  [tool_result] ${block.tool_use_id ? `(${(block.tool_use_id as string).slice(-8)}) ` : ''}${content}`);
-          } else if (block.type === 'text') {
-            log(`  [user] ${truncText(block.text as string)}`);
-          }
-        }
-      } else if (typeof msg.content === 'string') {
-        log(`  [user] ${truncText(msg.content)}`);
-      }
+    } else if (message.type === 'user' && typeof content === 'string') {
+      log(`[user] ${trunc(content as string)}`);
     }
 
     if (message.type === 'assistant' && 'uuid' in message) {
@@ -534,10 +517,7 @@ async function runQuery(
     if (message.type === 'result') {
       resultCount++;
       const textResult = 'result' in message ? (message as { result?: string }).result : null;
-      const resultText = textResult && !LLM_LOG_FULL
-        ? ` text=${textResult.slice(0, 200)}`
-        : '';
-      log(`Result #${resultCount}: subtype=${message.subtype}${resultText}`);
+      log(`[result] ${textResult ? trunc(textResult) : '(no text)'}`);
       writeOutput({
         status: 'success',
         result: textResult || null,
