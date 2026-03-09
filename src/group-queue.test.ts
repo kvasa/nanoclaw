@@ -6,6 +6,8 @@ import { GroupQueue } from './group-queue.js';
 vi.mock('./config.js', () => ({
   DATA_DIR: '/tmp/nanoclaw-test-data',
   MAX_CONCURRENT_CONTAINERS: 2,
+  MAX_RETRIES: 5,
+  BASE_RETRY_MS: 5000,
 }));
 
 // Mock fs operations used by sendMessage/closeStdin

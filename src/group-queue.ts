@@ -2,7 +2,12 @@ import { ChildProcess } from 'child_process';
 import fs from 'fs';
 import path from 'path';
 
-import { DATA_DIR, MAX_CONCURRENT_CONTAINERS } from './config.js';
+import {
+  BASE_RETRY_MS,
+  DATA_DIR,
+  MAX_CONCURRENT_CONTAINERS,
+  MAX_RETRIES,
+} from './config.js';
 import { logger } from './logger.js';
 
 interface QueuedTask {
@@ -10,9 +15,6 @@ interface QueuedTask {
   groupJid: string;
   fn: () => Promise<void>;
 }
-
-const MAX_RETRIES = 5;
-const BASE_RETRY_MS = 5000;
 
 interface GroupState {
   active: boolean;

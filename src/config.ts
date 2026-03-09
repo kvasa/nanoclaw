@@ -76,3 +76,16 @@ export const TIMEZONE =
   process.env.TZ || Intl.DateTimeFormat().resolvedOptions().timeZone;
 
 export const LOG_LEVEL = process.env.LOG_LEVEL || envConfig.LOG_LEVEL || 'info';
+
+// Reaction emoji progression timing (eyes → gear delay)
+export const REACTION_TRANSITION_DELAY_MS = 2000;
+
+// Default message fetch limit for getNewMessages / getMessagesSince
+export const DEFAULT_MESSAGE_LIMIT = 200;
+
+// How long to wait after task result before closing container stdin
+export const TASK_CLOSE_DELAY_MS = 10000;
+
+// Retry backoff for failed container runs
+export const MAX_RETRIES = 5;
+export const BASE_RETRY_MS = 5000;

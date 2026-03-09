@@ -7,6 +7,7 @@ import {
   DATA_DIR,
   IDLE_TIMEOUT,
   POLL_INTERVAL,
+  REACTION_TRANSITION_DELAY_MS,
   TIMEZONE,
   TRIGGER_PATTERN,
 } from './config.js';
@@ -255,7 +256,7 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
       } catch (err) {
         logger.debug({ err, chatJid }, 'Failed to add gear reaction');
       }
-    }, 2000);
+    }, REACTION_TRANSITION_DELAY_MS);
   }
   let hadError = false;
   let outputSentToUser = false;
@@ -271,7 +272,10 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
       try {
         await channel.removeReaction?.(chatJid, reactedMsgId, removing);
       } catch (err) {
-        logger.debug({ err, chatJid }, 'Failed to remove reaction during finalize');
+        logger.debug(
+          { err, chatJid },
+          'Failed to remove reaction during finalize',
+        );
       }
     }
     try {
