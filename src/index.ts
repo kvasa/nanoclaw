@@ -154,10 +154,14 @@ async function swapReaction(
 ): Promise<void> {
   try {
     await channel.removeReaction?.(jid, msgId, remove);
-  } catch {}
+  } catch (err) {
+    logger.debug({ err, jid, msgId }, 'Failed to remove reaction');
+  }
   try {
     await channel.addReaction?.(jid, msgId, add);
-  } catch {}
+  } catch (err) {
+    logger.debug({ err, jid, msgId }, 'Failed to add reaction');
+  }
 }
 
 /**
@@ -233,18 +237,24 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
     try {
       await channel.addReaction?.(chatJid, reactedMsgId, 'eyes');
       currentReaction = 'eyes';
-    } catch {}
+    } catch (err) {
+      logger.debug({ err, chatJid }, 'Failed to add eyes reaction');
+    }
     // eyes → gear after short delay so user sees the progression
     gearTimerId = setTimeout(async () => {
       if (currentReaction !== 'eyes') return; // already finalized
       try {
         await channel.removeReaction?.(chatJid, reactedMsgId, 'eyes');
-      } catch {}
+      } catch (err) {
+        logger.debug({ err, chatJid }, 'Failed to remove eyes reaction');
+      }
       if (currentReaction !== 'eyes') return; // finalized while removing
       currentReaction = 'gear';
       try {
         await channel.addReaction?.(chatJid, reactedMsgId, 'gear');
-      } catch {}
+      } catch (err) {
+        logger.debug({ err, chatJid }, 'Failed to add gear reaction');
+      }
     }, 2000);
   }
   let hadError = false;
@@ -260,11 +270,15 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
     if (removing) {
       try {
         await channel.removeReaction?.(chatJid, reactedMsgId, removing);
-      } catch {}
+      } catch (err) {
+        logger.debug({ err, chatJid }, 'Failed to remove reaction during finalize');
+      }
     }
     try {
       await channel.addReaction?.(chatJid, reactedMsgId, emoji);
-    } catch {}
+    } catch (err) {
+      logger.debug({ err, chatJid, emoji }, 'Failed to add final reaction');
+    }
   };
 
   const output = await runAgent(group, prompt, chatJid, async (result) => {

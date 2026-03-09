@@ -172,7 +172,8 @@ export class GroupQueue {
       fs.writeFileSync(tempPath, JSON.stringify({ type: 'message', text }));
       fs.renameSync(tempPath, filepath);
       return true;
-    } catch {
+    } catch (err) {
+      logger.debug({ groupJid, err }, 'Failed to write IPC message');
       return false;
     }
   }
@@ -188,8 +189,8 @@ export class GroupQueue {
     try {
       fs.mkdirSync(inputDir, { recursive: true });
       fs.writeFileSync(path.join(inputDir, '_close'), '');
-    } catch {
-      // ignore
+    } catch (err) {
+      logger.debug({ groupJid, err }, 'Failed to write close sentinel');
     }
   }
 
