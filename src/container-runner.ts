@@ -518,11 +518,7 @@ export async function runContainerAgent(
       const isError = code !== 0;
 
       if (isError) {
-        logLines.push(
-          `=== Input ===`,
-          JSON.stringify(input, null, 2),
-          ``,
-        );
+        logLines.push(`=== Input ===`, JSON.stringify(input, null, 2), ``);
       }
 
       // Agent-runner stderr contains the LLM communication logs
