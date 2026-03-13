@@ -266,7 +266,12 @@ function buildContainerArgs(
   args.push(...hostGatewayArgs());
 
   // Pass model and log detail level to agent-runner
-  const agentConfig = readEnvFile(['CLAUDE_MODEL', 'LLM_LOG_DETAIL']);
+  const agentConfig = readEnvFile([
+    'CLAUDE_MODEL',
+    'LLM_LOG_DETAIL',
+    'RHL_EMAIL',
+    'RHL_PASS',
+  ]);
   const claudeModel = process.env.CLAUDE_MODEL || agentConfig.CLAUDE_MODEL;
   const llmLogDetail = process.env.LLM_LOG_DETAIL || agentConfig.LLM_LOG_DETAIL;
   if (claudeModel) {
@@ -275,6 +280,12 @@ function buildContainerArgs(
   if (llmLogDetail) {
     args.push('-e', `LLM_LOG_DETAIL=${llmLogDetail}`);
   }
+
+  // Rohlik MCP credentials
+  const rhlEmail = process.env.RHL_EMAIL || agentConfig.RHL_EMAIL;
+  const rhlPass = process.env.RHL_PASS || agentConfig.RHL_PASS;
+  if (rhlEmail) args.push('-e', `RHL_EMAIL=${rhlEmail}`);
+  if (rhlPass) args.push('-e', `RHL_PASS=${rhlPass}`);
 
   // Run as host user so bind-mounted files are accessible.
   // Skip when running as root (uid 0), as the container's node user (uid 1000),

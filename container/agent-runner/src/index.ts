@@ -417,6 +417,7 @@ async function runQuery(
         'NotebookEdit',
         'mcp__nanoclaw__*',
         'mcp__gmail__*',
+        'mcp__rohlik__*',
       ],
       env: sdkEnv,
       permissionMode: 'bypassPermissions',
@@ -435,6 +436,17 @@ async function runQuery(
         gmail: {
           command: 'npx',
           args: ['-y', '@gongrzhe/server-gmail-autoauth-mcp'],
+        },
+        rohlik: {
+          command: 'npx',
+          args: [
+            'mcp-remote',
+            'https://mcp.rohlik.cz/mcp',
+            '--header',
+            `rhl-email: ${process.env.RHL_EMAIL || ''}`,
+            '--header',
+            `rhl-pass: ${process.env.RHL_PASS || ''}`,
+          ],
         },
       },
       hooks: {
