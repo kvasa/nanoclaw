@@ -27,6 +27,7 @@ interface ContainerInput {
   isMain: boolean;
   isScheduledTask?: boolean;
   assistantName?: string;
+  enabledMcpServers?: string[];
 }
 
 interface ContainerOutput {
@@ -393,7 +394,45 @@ async function runQuery(
     log(`Additional directories: ${extraDirs.join(', ')}`);
   }
 
-  log(`[config] model=${CLAUDE_MODEL} session=${containerInput.sessionId || 'new'}`);
+  // Build MCP servers: nanoclaw is always loaded, others are opt-in
+  const mcpServers: Record<string, { command: string; args: string[]; env?: Record<string, string> }> = {
+    nanoclaw: {
+      command: 'node',
+      args: [mcpServerPath],
+      env: {
+        NANOCLAW_CHAT_JID: containerInput.chatJid,
+        NANOCLAW_GROUP_FOLDER: containerInput.groupFolder,
+        NANOCLAW_IS_MAIN: containerInput.isMain ? '1' : '0',
+      },
+    },
+  };
+
+  const optionalMcps: Record<string, { command: string; args: string[] }> = {
+    gmail: {
+      command: 'npx',
+      args: ['-y', '@gongrzhe/server-gmail-autoauth-mcp'],
+    },
+    rohlik: {
+      command: 'npx',
+      args: [
+        'mcp-remote',
+        'https://mcp.rohlik.cz/mcp',
+        '--header',
+        `rhl-email: ${process.env.RHL_EMAIL || ''}`,
+        '--header',
+        `rhl-pass: ${process.env.RHL_PASS || ''}`,
+      ],
+    },
+  };
+
+  const enabledMcpNames = new Set(containerInput.enabledMcpServers ?? []);
+  for (const [name, config] of Object.entries(optionalMcps)) {
+    if (enabledMcpNames.has(name)) {
+      mcpServers[name] = config;
+    }
+  }
+
+  log(`[config] model=${CLAUDE_MODEL} session=${containerInput.sessionId || 'new'} mcpServers=${Object.keys(mcpServers).join(',')}`);
   log(`[prompt] ${containerInput.prompt}`);
 
   for await (const message of query({
@@ -416,39 +455,13 @@ async function runQuery(
         'TodoWrite', 'ToolSearch', 'Skill',
         'NotebookEdit',
         'mcp__nanoclaw__*',
-        'mcp__gmail__*',
-        'mcp__rohlik__*',
+        ...[...enabledMcpNames].map(name => `mcp__${name}__*`),
       ],
       env: sdkEnv,
       permissionMode: 'bypassPermissions',
       allowDangerouslySkipPermissions: true,
       settingSources: ['project', 'user'],
-      mcpServers: {
-        nanoclaw: {
-          command: 'node',
-          args: [mcpServerPath],
-          env: {
-            NANOCLAW_CHAT_JID: containerInput.chatJid,
-            NANOCLAW_GROUP_FOLDER: containerInput.groupFolder,
-            NANOCLAW_IS_MAIN: containerInput.isMain ? '1' : '0',
-          },
-        },
-        gmail: {
-          command: 'npx',
-          args: ['-y', '@gongrzhe/server-gmail-autoauth-mcp'],
-        },
-        rohlik: {
-          command: 'npx',
-          args: [
-            'mcp-remote',
-            'https://mcp.rohlik.cz/mcp',
-            '--header',
-            `rhl-email: ${process.env.RHL_EMAIL || ''}`,
-            '--header',
-            `rhl-pass: ${process.env.RHL_PASS || ''}`,
-          ],
-        },
-      },
+      mcpServers: mcpServers,
       hooks: {
         PreCompact: [{ hooks: [createPreCompactHook(containerInput.assistantName)] }],
       },

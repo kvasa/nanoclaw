@@ -326,6 +326,7 @@ async function runAgent(
         groupFolder: group.folder,
         chatJid,
         isMain,
+        enabledMcpServers: group.containerConfig?.enabledMcpServers,
       },
       (proc, containerName) =>
         queue.registerProcess(chatJid, proc, containerName, group.folder),

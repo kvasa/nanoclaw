@@ -100,6 +100,7 @@ export const IpcRegisterGroupSchema = z.object({
         )
         .optional(),
       timeout: z.number().optional(),
+      enabledMcpServers: z.array(z.string()).optional(),
     })
     .optional(),
 });

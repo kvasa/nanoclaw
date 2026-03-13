@@ -44,6 +44,7 @@ export interface ContainerInput {
   isMain: boolean;
   isScheduledTask?: boolean;
   assistantName?: string;
+  enabledMcpServers?: string[];
 }
 
 export interface ContainerOutput {
@@ -239,6 +240,7 @@ function buildVolumeMounts(
 function buildContainerArgs(
   mounts: VolumeMount[],
   containerName: string,
+  enabledMcpServers?: string[],
 ): string[] {
   const args: string[] = ['run', '-i', '--rm', '--name', containerName];
 
@@ -281,11 +283,13 @@ function buildContainerArgs(
     args.push('-e', `LLM_LOG_DETAIL=${llmLogDetail}`);
   }
 
-  // Rohlik MCP credentials
-  const rhlEmail = process.env.RHL_EMAIL || agentConfig.RHL_EMAIL;
-  const rhlPass = process.env.RHL_PASS || agentConfig.RHL_PASS;
-  if (rhlEmail) args.push('-e', `RHL_EMAIL=${rhlEmail}`);
-  if (rhlPass) args.push('-e', `RHL_PASS=${rhlPass}`);
+  // Rohlik MCP credentials (only when rohlik is enabled)
+  if (enabledMcpServers?.includes('rohlik')) {
+    const rhlEmail = process.env.RHL_EMAIL || agentConfig.RHL_EMAIL;
+    const rhlPass = process.env.RHL_PASS || agentConfig.RHL_PASS;
+    if (rhlEmail) args.push('-e', `RHL_EMAIL=${rhlEmail}`);
+    if (rhlPass) args.push('-e', `RHL_PASS=${rhlPass}`);
+  }
 
   // Run as host user so bind-mounted files are accessible.
   // Skip when running as root (uid 0), as the container's node user (uid 1000),
@@ -324,7 +328,7 @@ export async function runContainerAgent(
   const mounts = buildVolumeMounts(group, input.isMain);
   const safeName = group.folder.replace(/[^a-zA-Z0-9-]/g, '-');
   const containerName = `nanoclaw-${safeName}-${Date.now()}`;
-  const containerArgs = buildContainerArgs(mounts, containerName);
+  const containerArgs = buildContainerArgs(mounts, containerName, input.enabledMcpServers);
 
   logger.debug(
     {
