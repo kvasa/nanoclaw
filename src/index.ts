@@ -28,6 +28,7 @@ import {
   PROXY_BIND_HOST,
 } from './container-runtime.js';
 import {
+  deleteSession,
   getAllChats,
   getAllRegisteredGroups,
   getAllSessions,
@@ -307,8 +308,28 @@ async function runAgent(
   );
 
   // Wrap onOutput to track session ID from streamed results
+  // Also intercept corrupted-session errors (e.g. expired image data)
   const wrappedOnOutput = onOutput
     ? async (output: ContainerOutput) => {
+        // Detect API errors that slipped through as "success" results
+        // (SDK returns them as result text rather than throwing)
+        const isCorruptedSession =
+          output.result &&
+          /API Error: 400\b/.test(output.result) &&
+          /Could not process/.test(output.result);
+        if (isCorruptedSession) {
+          logger.warn(
+            { group: group.name, error: output.result },
+            'Intercepted corrupted session error, clearing session',
+          );
+          delete sessions[group.folder];
+          deleteSession(group.folder);
+          // Convert to error so it doesn't get forwarded to user
+          output.status = 'error';
+          output.error = output.result ?? undefined;
+          output.result = null;
+          return; // Don't forward to user
+        }
         if (output.newSessionId) {
           sessions[group.folder] = output.newSessionId;
           setSession(group.folder, output.newSessionId);
@@ -343,6 +364,20 @@ async function runAgent(
         { group: group.name, error: output.error },
         'Container agent error',
       );
+      // If the error indicates corrupted session data (e.g. expired image),
+      // clear the session so the next invocation starts fresh.
+      if (
+        output.error &&
+        /\b400\b/.test(output.error) &&
+        /Could not process/.test(output.error)
+      ) {
+        delete sessions[group.folder];
+        deleteSession(group.folder);
+        logger.warn(
+          { group: group.name },
+          'Cleared corrupted session after image processing error',
+        );
+      }
       return 'error';
     }
 

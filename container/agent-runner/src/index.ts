@@ -604,16 +604,12 @@ async function runQuery(
       log(`[result] ${textResult ? trunc(textResult) : '(no text)'}`);
 
       // Detect API errors returned as result text (e.g. "Could not process image").
-      // These should be reported as errors, not forwarded to the user as normal output.
-      const isApiError = textResult && /^API Error: \d{3}\b/.test(textResult);
+      // Throw so the main() catch block can retry without session if appropriate.
+      const isApiError =
+        textResult && /API Error: \d{3}\b/.test(textResult);
       if (isApiError) {
-        log(`Detected API error in result text, reporting as error`);
-        writeOutput({
-          status: 'error',
-          result: null,
-          newSessionId,
-          error: textResult,
-        });
+        log(`Detected API error in result text, throwing to trigger retry`);
+        throw new Error(textResult);
       } else {
         writeOutput({
           status: 'success',
