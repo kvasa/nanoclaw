@@ -87,6 +87,12 @@ function createSchema(database: Database.Database): void {
       container_config TEXT,
       requires_trigger INTEGER DEFAULT 1
     );
+
+    CREATE TABLE IF NOT EXISTS gmail_processed_ids (
+      message_id TEXT PRIMARY KEY,
+      processed_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_gmail_processed_at ON gmail_processed_ids(processed_at);
   `);
 
   // Add context_mode column if it doesn't exist (migration for existing DBs)
@@ -641,6 +647,33 @@ export function getAllRegisteredGroups(): Record<string, RegisteredGroup> {
     };
   }
   return result;
+}
+
+// --- Gmail processed IDs ---
+
+export function addGmailProcessedId(messageId: string): void {
+  db.prepare(
+    `INSERT OR IGNORE INTO gmail_processed_ids (message_id, processed_at) VALUES (?, ?)`,
+  ).run(messageId, new Date().toISOString());
+}
+
+/** Load message IDs processed within the last N days (default 7). */
+export function getRecentGmailProcessedIds(days = 7): string[] {
+  const since = new Date(Date.now() - days * 86_400_000).toISOString();
+  const rows = db
+    .prepare(
+      `SELECT message_id FROM gmail_processed_ids WHERE processed_at > ?`,
+    )
+    .all(since) as Array<{ message_id: string }>;
+  return rows.map((r) => r.message_id);
+}
+
+/** Delete IDs older than N days (default 30) to keep the table small. */
+export function pruneOldGmailProcessedIds(days = 30): void {
+  const cutoff = new Date(Date.now() - days * 86_400_000).toISOString();
+  db.prepare(`DELETE FROM gmail_processed_ids WHERE processed_at < ?`).run(
+    cutoff,
+  );
 }
 
 // --- JSON migration ---

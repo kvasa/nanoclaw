@@ -24,7 +24,11 @@ import { RegisteredGroup, SendFileOptions } from './types.js';
 export interface IpcDeps {
   sendMessage: (jid: string, text: string) => Promise<void>;
   sendEmailReply?: (threadJid: string, text: string) => Promise<boolean>;
-  composeEmail?: (to: string, subject: string, body: string) => Promise<boolean>;
+  composeEmail?: (
+    to: string,
+    subject: string,
+    body: string,
+  ) => Promise<boolean>;
   sendFile: (
     jid: string,
     filePath: string,
@@ -119,7 +123,10 @@ export function startIpcWatcher(deps: IpcDeps): void {
                       'Unauthorized send_email attempt blocked',
                     );
                   } else if (deps.sendEmailReply) {
-                    const sent = await deps.sendEmailReply(data.threadJid, data.text);
+                    const sent = await deps.sendEmailReply(
+                      data.threadJid,
+                      data.text,
+                    );
                     logger.info(
                       { threadJid: data.threadJid, sent, sourceGroup },
                       'IPC send_email resolved',
@@ -131,10 +138,9 @@ export function startIpcWatcher(deps: IpcDeps): void {
                       await deps.sendMessage(mainJid, feedback);
                     }
                   } else {
-                    await deps.sendMessage(data.threadJid, data.text);
-                    logger.info(
+                    logger.warn(
                       { threadJid: data.threadJid, sourceGroup },
-                      'IPC email reply queued for approval',
+                      'send_email requested but Gmail channel is not connected — dropping',
                     );
                   }
                 } else if (data.type === 'compose_email') {
@@ -148,7 +154,11 @@ export function startIpcWatcher(deps: IpcDeps): void {
                       'compose_email requested but Gmail channel not available',
                     );
                   } else {
-                    const sent = await deps.composeEmail(data.to, data.subject, data.body);
+                    const sent = await deps.composeEmail(
+                      data.to,
+                      data.subject,
+                      data.body,
+                    );
                     logger.info(
                       { to: data.to, sent, sourceGroup },
                       'IPC compose_email resolved',
@@ -161,63 +171,64 @@ export function startIpcWatcher(deps: IpcDeps): void {
                     }
                   }
                 } else {
-                const targetGroup = registeredGroups[data.chatJid];
-                const authorized =
-                  isMain || (targetGroup && targetGroup.folder === sourceGroup);
+                  const targetGroup = registeredGroups[data.chatJid];
+                  const authorized =
+                    isMain ||
+                    (targetGroup && targetGroup.folder === sourceGroup);
 
-                if (!authorized) {
-                  logger.warn(
-                    { chatJid: data.chatJid, sourceGroup, type: data.type },
-                    'Unauthorized IPC message attempt blocked',
-                  );
-                } else if (data.type === 'message') {
-                  await deps.sendMessage(data.chatJid, data.text);
-                  logger.info(
-                    { chatJid: data.chatJid, sourceGroup },
-                    'IPC message sent',
-                  );
-                } else if (data.type === 'send_file') {
-                  await deps.sendFile(
-                    data.chatJid,
-                    data.filePath,
-                    sourceGroup,
-                    data.options,
-                  );
-                  logger.info(
-                    {
-                      chatJid: data.chatJid,
-                      filePath: data.filePath,
-                      sourceGroup,
-                    },
-                    'IPC file sent',
-                  );
-                } else if (data.type === 'send_voice') {
-                  const audioBuffer = await synthesizeSpeech(
-                    data.text,
-                    data.voice as TtsVoice | undefined,
-                  );
-                  if (audioBuffer) {
-                    await deps.sendVoice(
+                  if (!authorized) {
+                    logger.warn(
+                      { chatJid: data.chatJid, sourceGroup, type: data.type },
+                      'Unauthorized IPC message attempt blocked',
+                    );
+                  } else if (data.type === 'message') {
+                    await deps.sendMessage(data.chatJid, data.text);
+                    logger.info(
+                      { chatJid: data.chatJid, sourceGroup },
+                      'IPC message sent',
+                    );
+                  } else if (data.type === 'send_file') {
+                    await deps.sendFile(
                       data.chatJid,
-                      audioBuffer,
-                      data.caption,
+                      data.filePath,
+                      sourceGroup,
+                      data.options,
                     );
                     logger.info(
                       {
                         chatJid: data.chatJid,
-                        textLength: data.text.length,
-                        audioSize: audioBuffer.length,
+                        filePath: data.filePath,
                         sourceGroup,
                       },
-                      'IPC voice message sent',
+                      'IPC file sent',
                     );
-                  } else {
-                    logger.warn(
-                      { chatJid: data.chatJid, sourceGroup },
-                      'TTS synthesis failed for voice message',
+                  } else if (data.type === 'send_voice') {
+                    const audioBuffer = await synthesizeSpeech(
+                      data.text,
+                      data.voice as TtsVoice | undefined,
                     );
+                    if (audioBuffer) {
+                      await deps.sendVoice(
+                        data.chatJid,
+                        audioBuffer,
+                        data.caption,
+                      );
+                      logger.info(
+                        {
+                          chatJid: data.chatJid,
+                          textLength: data.text.length,
+                          audioSize: audioBuffer.length,
+                          sourceGroup,
+                        },
+                        'IPC voice message sent',
+                      );
+                    } else {
+                      logger.warn(
+                        { chatJid: data.chatJid, sourceGroup },
+                        'TTS synthesis failed for voice message',
+                      );
+                    }
                   }
-                }
                 }
               }
               fs.unlinkSync(filePath);
