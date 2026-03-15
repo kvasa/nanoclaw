@@ -23,6 +23,8 @@ import { RegisteredGroup, SendFileOptions } from './types.js';
 
 export interface IpcDeps {
   sendMessage: (jid: string, text: string) => Promise<void>;
+  sendEmailReply?: (threadJid: string, text: string) => Promise<boolean>;
+  composeEmail?: (to: string, subject: string, body: string) => Promise<boolean>;
   sendFile: (
     jid: string,
     filePath: string,
@@ -103,6 +105,62 @@ export function startIpcWatcher(deps: IpcDeps): void {
                 );
               } else {
                 const data = parsed.data;
+
+                const mainJid = Object.entries(registeredGroups).find(
+                  ([, g]) => g.isMain,
+                )?.[0];
+
+                // send_email / compose_email use special fields — handle separately
+                if (data.type === 'send_email') {
+                  // Only main group can send email replies
+                  if (!isMain) {
+                    logger.warn(
+                      { sourceGroup },
+                      'Unauthorized send_email attempt blocked',
+                    );
+                  } else if (deps.sendEmailReply) {
+                    const sent = await deps.sendEmailReply(data.threadJid, data.text);
+                    logger.info(
+                      { threadJid: data.threadJid, sent, sourceGroup },
+                      'IPC send_email resolved',
+                    );
+                    if (mainJid) {
+                      const feedback = sent
+                        ? `✅ Email reply odeslán`
+                        : `❌ Email reply zamítnut (nebyl odeslán)`;
+                      await deps.sendMessage(mainJid, feedback);
+                    }
+                  } else {
+                    await deps.sendMessage(data.threadJid, data.text);
+                    logger.info(
+                      { threadJid: data.threadJid, sourceGroup },
+                      'IPC email reply queued for approval',
+                    );
+                  }
+                } else if (data.type === 'compose_email') {
+                  if (!isMain) {
+                    logger.warn(
+                      { sourceGroup },
+                      'Unauthorized compose_email attempt blocked',
+                    );
+                  } else if (!deps.composeEmail) {
+                    logger.warn(
+                      'compose_email requested but Gmail channel not available',
+                    );
+                  } else {
+                    const sent = await deps.composeEmail(data.to, data.subject, data.body);
+                    logger.info(
+                      { to: data.to, sent, sourceGroup },
+                      'IPC compose_email resolved',
+                    );
+                    if (mainJid) {
+                      const feedback = sent
+                        ? `✅ Email odeslán na ${data.to}`
+                        : `❌ Email zamítnut (nebyl odeslán)`;
+                      await deps.sendMessage(mainJid, feedback);
+                    }
+                  }
+                } else {
                 const targetGroup = registeredGroups[data.chatJid];
                 const authorized =
                   isMain || (targetGroup && targetGroup.folder === sourceGroup);
@@ -159,6 +217,7 @@ export function startIpcWatcher(deps: IpcDeps): void {
                       'TTS synthesis failed for voice message',
                     );
                   }
+                }
                 }
               }
               fs.unlinkSync(filePath);

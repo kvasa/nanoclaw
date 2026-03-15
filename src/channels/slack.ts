@@ -33,6 +33,13 @@ export interface SlackChannelOpts {
   registeredGroups: () => Record<string, RegisteredGroup>;
 }
 
+interface PendingApproval {
+  resolve: (approved: boolean) => void;
+  timer: ReturnType<typeof setTimeout>;
+  channelId: string;
+  ts?: string;
+}
+
 export class SlackChannel implements Channel {
   name = 'slack';
 
@@ -43,6 +50,7 @@ export class SlackChannel implements Channel {
   private outgoingQueue: Array<{ jid: string; text: string }> = [];
   private flushing = false;
   private userNameCache = new Map<string, string>();
+  private pendingApprovals = new Map<string, PendingApproval>();
 
   private opts: SlackChannelOpts;
 
@@ -164,6 +172,50 @@ export class SlackChannel implements Channel {
         is_from_me: isBotMessage,
         is_bot_message: isBotMessage,
       });
+    });
+
+    // Handle Gmail approval button clicks
+    this.app.action(/^gmail_(approve|reject)_/, async ({ action, ack, body }) => {
+      await ack();
+      const act = action as { action_id: string; value: string };
+      const id = act.value;
+      const approved = act.action_id.startsWith('gmail_approve_');
+      const pending = this.pendingApprovals.get(id);
+
+      const responseBody = body as unknown as {
+        channel?: { id: string };
+        message?: { ts: string };
+      };
+      const channelId = responseBody.channel?.id ?? (pending?.channelId ?? '');
+      const ts = responseBody.message?.ts ?? pending?.ts;
+
+      if (!pending) {
+        // Service restarted — approval context is gone
+        if (channelId && ts) {
+          await this.app.client.chat.update({
+            channel: channelId,
+            ts,
+            text: '⚠️ Schválení vypršelo — služba byla restartována, email nebyl odeslán.',
+            blocks: [],
+          }).catch(() => {});
+        }
+        return;
+      }
+
+      clearTimeout(pending.timer);
+      this.pendingApprovals.delete(id);
+      if (channelId && ts) {
+        await this.app.client.chat
+          .update({
+            channel: channelId,
+            ts,
+            text: approved ? '✅ Gmail reply sent' : '❌ Gmail reply rejected',
+            blocks: [],
+          })
+          .catch(() => {});
+      }
+
+      pending.resolve(approved);
     });
   }
 
@@ -305,6 +357,90 @@ export class SlackChannel implements Channel {
   // doesn't need channel-specific branching.
   async setTyping(_jid: string, _isTyping: boolean): Promise<void> {
     // no-op: Slack Bot API has no typing indicator endpoint
+  }
+
+  /**
+   * Post a Slack confirmation form for a pending Gmail reply.
+   * Returns true if the user clicks "Odeslat", false if rejected or timed out.
+   */
+  async requestEmailApproval(opts: {
+    channelId: string;
+    to: string;
+    subject: string;
+    body: string;
+  }): Promise<boolean> {
+    const id = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    const preview =
+      opts.body.length > 500 ? `${opts.body.slice(0, 500)}…` : opts.body;
+
+    let postedTs: string | undefined;
+    try {
+      const result = await this.app.client.chat.postMessage({
+        channel: opts.channelId,
+        text: 'Gmail reply — čeká na potvrzení',
+        blocks: [
+          {
+            type: 'section',
+            text: {
+              type: 'mrkdwn',
+              text: `*Gmail reply — čeká na potvrzení*\n*Komu:* ${opts.to}\n*Předmět:* Re: ${opts.subject}\n\n\`\`\`${preview}\`\`\``,
+            },
+          },
+          {
+            type: 'actions',
+            block_id: `gmail_approval_${id}`,
+            elements: [
+              {
+                type: 'button',
+                text: { type: 'plain_text', text: 'Odeslat' },
+                style: 'primary',
+                action_id: `gmail_approve_${id}`,
+                value: id,
+              },
+              {
+                type: 'button',
+                text: { type: 'plain_text', text: 'Zamítnout' },
+                style: 'danger',
+                action_id: `gmail_reject_${id}`,
+                value: id,
+              },
+            ],
+          },
+        ],
+      });
+      postedTs = result.ts as string | undefined;
+    } catch (err) {
+      logger.error({ err }, 'Failed to post Gmail approval form to Slack');
+      return false;
+    }
+
+    return new Promise((resolve) => {
+      const timer = setTimeout(() => {
+        this.pendingApprovals.delete(id);
+        logger.warn(
+          { to: opts.to, subject: opts.subject },
+          'Gmail approval timed out — rejecting',
+        );
+        if (postedTs) {
+          this.app.client.chat
+            .update({
+              channel: opts.channelId,
+              ts: postedTs,
+              text: '⏱ Gmail reply timed out — not sent',
+              blocks: [],
+            })
+            .catch(() => {});
+        }
+        resolve(false);
+      }, 10 * 60 * 1000);
+
+      this.pendingApprovals.set(id, {
+        resolve,
+        timer,
+        channelId: opts.channelId,
+        ts: postedTs,
+      });
+    });
   }
 
   async addReaction(

@@ -14,6 +14,7 @@ const envConfig = readEnvFile([
   'GMAIL_RATE_LIMIT_PER_SENDER',
   'GMAIL_RATE_LIMIT_GLOBAL',
   'GMAIL_RATE_LIMIT_WINDOW_MS',
+  'GMAIL_RATE_LIMIT_OUTGOING',
 ]);
 
 export const ASSISTANT_NAME =
@@ -85,27 +86,55 @@ export const LOG_LEVEL = process.env.LOG_LEVEL || envConfig.LOG_LEVEL || 'info';
 // Gmail sender allowlist (optional). If set, only emails from these addresses/domains are processed.
 // GMAIL_ALLOWED_SENDERS: comma-separated email addresses, e.g. "alice@example.com,bob@work.com"
 // GMAIL_ALLOWED_DOMAINS: comma-separated domains, e.g. "example.com,work.com"
-const _gmailSenders = process.env.GMAIL_ALLOWED_SENDERS || envConfig.GMAIL_ALLOWED_SENDERS || '';
-const _gmailDomains = process.env.GMAIL_ALLOWED_DOMAINS || envConfig.GMAIL_ALLOWED_DOMAINS || '';
+const _gmailSenders =
+  process.env.GMAIL_ALLOWED_SENDERS || envConfig.GMAIL_ALLOWED_SENDERS || '';
+const _gmailDomains =
+  process.env.GMAIL_ALLOWED_DOMAINS || envConfig.GMAIL_ALLOWED_DOMAINS || '';
 export const GMAIL_ALLOWED_SENDERS: Set<string> = new Set(
-  _gmailSenders ? _gmailSenders.split(',').map((s) => s.trim().toLowerCase()).filter(Boolean) : [],
+  _gmailSenders
+    ? _gmailSenders
+        .split(',')
+        .map((s) => s.trim().toLowerCase())
+        .filter(Boolean)
+    : [],
 );
 export const GMAIL_ALLOWED_DOMAINS: Set<string> = new Set(
-  _gmailDomains ? _gmailDomains.split(',').map((s) => s.trim().toLowerCase()).filter(Boolean) : [],
+  _gmailDomains
+    ? _gmailDomains
+        .split(',')
+        .map((s) => s.trim().toLowerCase())
+        .filter(Boolean)
+    : [],
 );
 
 // Rate limiting: max emails processed per sender per window, and global max per window.
 // GMAIL_RATE_LIMIT_PER_SENDER: max emails from one sender per window (default 5)
 // GMAIL_RATE_LIMIT_GLOBAL: max emails total per window (default 20)
+// GMAIL_RATE_LIMIT_OUTGOING: max outgoing emails (sent+rejected) per window (default 10)
 // GMAIL_RATE_LIMIT_WINDOW_MS: window in ms (default 3600000 = 1 hour)
 export const GMAIL_RATE_LIMIT_PER_SENDER = parseInt(
-  process.env.GMAIL_RATE_LIMIT_PER_SENDER || envConfig.GMAIL_RATE_LIMIT_PER_SENDER || '5', 10,
+  process.env.GMAIL_RATE_LIMIT_PER_SENDER ||
+    envConfig.GMAIL_RATE_LIMIT_PER_SENDER ||
+    '5',
+  10,
 );
 export const GMAIL_RATE_LIMIT_GLOBAL = parseInt(
-  process.env.GMAIL_RATE_LIMIT_GLOBAL || envConfig.GMAIL_RATE_LIMIT_GLOBAL || '20', 10,
+  process.env.GMAIL_RATE_LIMIT_GLOBAL ||
+    envConfig.GMAIL_RATE_LIMIT_GLOBAL ||
+    '20',
+  10,
+);
+export const GMAIL_RATE_LIMIT_OUTGOING = parseInt(
+  process.env.GMAIL_RATE_LIMIT_OUTGOING ||
+    envConfig.GMAIL_RATE_LIMIT_OUTGOING ||
+    '10',
+  10,
 );
 export const GMAIL_RATE_LIMIT_WINDOW_MS = parseInt(
-  process.env.GMAIL_RATE_LIMIT_WINDOW_MS || envConfig.GMAIL_RATE_LIMIT_WINDOW_MS || '3600000', 10,
+  process.env.GMAIL_RATE_LIMIT_WINDOW_MS ||
+    envConfig.GMAIL_RATE_LIMIT_WINDOW_MS ||
+    '3600000',
+  10,
 );
 
 // Reaction emoji progression timing (eyes → gear delay)
