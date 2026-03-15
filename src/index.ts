@@ -22,6 +22,8 @@ import {
   getChannelFactory,
   getRegisteredChannelNames,
 } from './channels/registry.js';
+import { GmailChannel } from './channels/gmail.js';
+import { SlackChannel } from './channels/slack.js';
 import {
   ContainerOutput,
   runContainerAgent,
@@ -738,6 +740,36 @@ async function main(): Promise<void> {
     }
   }
 
+  // Wire Gmail approval gate: all outgoing Gmail replies require Slack confirmation
+  const slackCh = channels.find((c) => c.name === 'slack') as
+    | SlackChannel
+    | undefined;
+  const gmailCh = channels.find((c) => c.name === 'gmail') as
+    | GmailChannel
+    | undefined;
+  if (slackCh && gmailCh) {
+    gmailCh.approvalGate = async (opts) => {
+      const mainEntry = Object.entries(registeredGroups).find(
+        ([, g]) => g.isMain,
+      );
+      if (!mainEntry) {
+        logger.warn('Gmail approval gate: no main group found — blocking send');
+        return false;
+      }
+      const mainJid = mainEntry[0];
+      if (!mainJid.startsWith('slack:')) {
+        logger.warn(
+          { mainJid },
+          'Gmail approval gate: main group is not Slack — blocking send',
+        );
+        return false;
+      }
+      const channelId = mainJid.replace(/^slack:/, '');
+      return slackCh.requestEmailApproval({ channelId, ...opts });
+    };
+    logger.info('Gmail approval gate wired to Slack main channel');
+  }
+
   // Start API server for direct client access (optional — requires API_TOKEN)
   if (API_TOKEN) {
     // Build Slack notifier for mirroring API queries to a Slack channel
@@ -807,6 +839,14 @@ async function main(): Promise<void> {
       if (!channel) throw new Error(`No channel for JID: ${jid}`);
       return channel.sendMessage(jid, text, threadTs);
     },
+    sendEmailReply: gmailCh
+      ? (threadJid, text): Promise<boolean> =>
+          gmailCh.replyEmail(threadJid, text)
+      : undefined,
+    composeEmail: gmailCh
+      ? (to, subject, body): Promise<boolean> =>
+          gmailCh.composeEmail(to, subject, body)
+      : undefined,
     sendVoice: async (jid: string, audioBuffer: Buffer, caption?: string) => {
       const channel = findChannel(channels, jid);
       if (!channel) throw new Error(`No channel for JID: ${jid}`);

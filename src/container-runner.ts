@@ -39,6 +39,40 @@ const OUTPUT_END_MARKER = '---NANOCLAW_OUTPUT_END---';
 const PROGRESS_START_MARKER = '---NANOCLAW_PROGRESS_START---';
 const PROGRESS_END_MARKER = '---NANOCLAW_PROGRESS_END---';
 
+// Email-related domains blocked at the network level so containers cannot
+// send email directly (bypassing the approval gate), even via subagents.
+// Covers Gmail API, major SMTP relays, and transactional email services.
+const BLOCKED_EMAIL_HOSTS = [
+  // Gmail API & auth
+  'gmail.googleapis.com',
+  'oauth2.googleapis.com',
+  'accounts.google.com',
+  'mail.google.com',
+  // Gmail SMTP
+  'smtp.gmail.com',
+  'smtp-relay.gmail.com',
+  // SendGrid
+  'api.sendgrid.com',
+  'smtp.sendgrid.net',
+  // Mailgun
+  'api.mailgun.net',
+  'smtp.mailgun.org',
+  // AWS SES
+  'email.amazonaws.com',
+  'email-smtp.amazonaws.com',
+  // Postmark
+  'api.postmarkapp.com',
+  'smtp.postmarkapp.com',
+  // Resend
+  'api.resend.com',
+  // Brevo (Sendinblue)
+  'api.brevo.com',
+  'smtp-relay.brevo.com',
+  // Microsoft / Office365
+  'smtp.office365.com',
+  'smtp.live.com',
+];
+
 export interface ContainerInput {
   prompt: string;
   sessionId?: string;
@@ -172,15 +206,10 @@ function buildVolumeMounts(
     readonly: false,
   });
 
-  // Gmail credentials directory (for Gmail MCP inside the container)
-  const gmailDir = path.join(homeDir, '.gmail-mcp');
-  if (fs.existsSync(gmailDir)) {
-    mounts.push({
-      hostPath: gmailDir,
-      containerPath: '/home/node/.gmail-mcp',
-      readonly: false, // MCP may need to refresh OAuth tokens
-    });
-  }
+  // NOTE: Gmail credentials are intentionally NOT mounted into containers.
+  // All Gmail sending must go through the host's GmailChannel via the
+  // send_email IPC tool, which enforces the user-approval gate.
+  // Direct container access to Gmail credentials would bypass this gate.
 
   // Per-group IPC namespace: each group gets its own IPC directory
   // This prevents cross-group privilege escalation via IPC
@@ -272,6 +301,10 @@ function buildContainerArgs(
 
   // Runtime-specific args for host gateway resolution
   args.push(...hostGatewayArgs());
+
+  for (const host of BLOCKED_EMAIL_HOSTS) {
+    args.push('--add-host', `${host}:0.0.0.0`);
+  }
 
   // Pass model and log detail level to agent-runner
   const agentConfig = readEnvFile(['CLAUDE_MODEL', 'LLM_LOG_DETAIL']);

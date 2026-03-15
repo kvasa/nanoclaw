@@ -218,6 +218,90 @@ The text you provide will be spoken as-is, so write it naturally as you would sp
 );
 
 server.tool(
+  'send_email',
+  `Reply to an email thread. The reply will NOT be sent immediately — it will be shown to the user for approval in Slack first. Only then is it actually delivered.
+
+To use this tool, extract the Gmail-Thread-JID from the email header (format: gmail:xxxx) and pass it as thread_jid.
+
+IMPORTANT: Never use Bash or any other method to send emails directly. Always use this tool — it is the only authorized way to send email replies.`,
+  {
+    thread_jid: z
+      .string()
+      .describe(
+        'The Gmail thread JID from the email header (e.g. gmail:18f3a2b4c5d6e7f8)',
+      ),
+    body: z.string().describe('The reply text to send'),
+  },
+  async (args) => {
+    if (!args.thread_jid.startsWith('gmail:')) {
+      return {
+        content: [
+          {
+            type: 'text' as const,
+            text: 'Error: thread_jid must start with gmail:',
+          },
+        ],
+        isError: true,
+      };
+    }
+
+    const data = {
+      type: 'send_email',
+      threadJid: args.thread_jid,
+      text: args.body,
+      groupFolder,
+      timestamp: new Date().toISOString(),
+    };
+
+    writeIpcFile(MESSAGES_DIR, data);
+
+    return {
+      content: [
+        {
+          type: 'text' as const,
+          text: 'Email reply submitted for approval. The user will see a Slack confirmation form before it is sent.',
+        },
+      ],
+    };
+  },
+);
+
+server.tool(
+  'compose_email',
+  `Send a new email to any recipient. The email will NOT be sent immediately — it will be shown to the user for approval in Slack first.
+
+Use this to compose and send a brand new email. For replying to an existing email thread, use send_email instead.
+
+IMPORTANT: Never use Bash or any other method to send emails directly. Always use this tool.`,
+  {
+    to: z.string().describe('Recipient email address (e.g. name@example.com)'),
+    subject: z.string().describe('Email subject line'),
+    body: z.string().describe('Email body text'),
+  },
+  async (args) => {
+    const data = {
+      type: 'compose_email',
+      to: args.to,
+      subject: args.subject,
+      body: args.body,
+      groupFolder,
+      timestamp: new Date().toISOString(),
+    };
+
+    writeIpcFile(MESSAGES_DIR, data);
+
+    return {
+      content: [
+        {
+          type: 'text' as const,
+          text: 'Email submitted for approval. The user will see a Slack confirmation form before it is sent.',
+        },
+      ],
+    };
+  },
+);
+
+server.tool(
   'schedule_task',
   `Schedule a recurring or one-time task. The task will run as a full agent with access to all tools. Returns the task ID for future reference. To modify an existing task, use update_task instead.
 

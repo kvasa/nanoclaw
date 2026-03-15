@@ -6,6 +6,21 @@ This is the **main channel**, which has elevated privileges. Base identity and b
 
 When you receive an email notification (messages starting with `[Email from ...`), inform the user about it but do NOT reply to the email unless specifically asked. You have Gmail tools available — use them only when the user explicitly asks you to reply, forward, or take action on an email.
 
+## Sending Emails
+
+Use the built-in MCP tools — never access Gmail credentials directly, never spawn a subagent for email:
+
+- **Reply to an existing email thread**: `mcp__nanoclaw__send_email(threadJid, text)` — `threadJid` is in the format `gmail:THREAD_ID` (shown in the email notification header)
+- **Compose a new email**: `mcp__nanoclaw__compose_email(to, subject, body)`
+
+Every outgoing email **requires Honza's approval** via Slack buttons (Odeslat / Zamítnout). The approval form appears automatically.
+
+**Important**: After calling the tool, always tell the user: *"Mail připravený — čeká na tvoje schválení ve Slacku."* Never say the email was sent — you don't know if the user approved or rejected it.
+
+### Email preferences
+- Signature: **Ahoj, / Honza** (never "Čau" or "Jan")
+- Never access `/workspace/group/gmail-mcp/` or `~/.gmail-mcp/` — credentials are managed by the host process
+
 ## Container Mounts
 
 Main has read-only access to the project and read-write access to its group folder:

@@ -10,6 +10,7 @@ import {
   GMAIL_ALLOWED_DOMAINS,
   GMAIL_ALLOWED_SENDERS,
   GMAIL_RATE_LIMIT_GLOBAL,
+  GMAIL_RATE_LIMIT_OUTGOING,
   GMAIL_RATE_LIMIT_PER_SENDER,
   GMAIL_RATE_LIMIT_WINDOW_MS,
 } from '../config.js';
@@ -58,6 +59,13 @@ export class GmailChannel implements Channel {
   private readEmailsTimestamps: number[] = [];
   private consecutiveErrors = 0;
   private userEmail = '';
+
+  /** If set, called before every outgoing email. Return false to abort the send. */
+  approvalGate?: (opts: {
+    to: string;
+    subject: string;
+    body: string;
+  }) => Promise<boolean>;
 
   constructor(opts: GmailChannelOpts, pollIntervalMs = 60000) {
     this.opts = opts;
@@ -135,54 +143,119 @@ export class GmailChannel implements Channel {
     text: string,
     _threadTs?: string,
   ): Promise<void> {
-    if (!this.gmail) {
-      logger.warn('Gmail not initialized');
-      return;
-    }
+    await this.replyEmail(jid, text);
+  }
+
+  /**
+   * Same as sendMessage but returns whether the email was actually sent.
+   * Used by the IPC send_email handler to provide feedback to the chat.
+   */
+  async replyEmail(jid: string, text: string): Promise<boolean> {
+    if (!this.gmail) return false;
 
     const threadId = jid.replace(/^gmail:/, '');
     const meta = this.threadMeta.get(threadId);
-
     if (!meta) {
       logger.warn({ jid }, 'No thread metadata for reply, cannot send');
-      return;
+      return false;
     }
 
-    // Sanitize header values to prevent CRLF injection
-    const sanitize = (s: string) => s.replace(/[\r\n]/g, ' ');
-    const rawSubject = sanitize(meta.subject);
+    if (!this.enforceOutgoingRateLimit('reply')) return false;
+
+    if (this.approvalGate) {
+      const approved = await this.approvalGate({
+        to: meta.sender,
+        subject: meta.subject,
+        body: text,
+      });
+      if (!approved) {
+        logger.info(
+          { to: meta.sender, subject: meta.subject },
+          'Gmail reply blocked by approval gate',
+        );
+        return false;
+      }
+    }
+
+    const rawSubject = this.sanitize(meta.subject);
     const subject = rawSubject.startsWith('Re:')
       ? rawSubject
       : `Re: ${rawSubject}`;
+    const encodedBody = Buffer.from(text).toString('base64');
 
     const headers = [
-      `To: ${sanitize(meta.sender)}`,
-      `From: ${sanitize(this.userEmail)}`,
-      `Subject: ${subject}`,
-      `In-Reply-To: ${sanitize(meta.messageId)}`,
-      `References: ${sanitize(meta.messageId)}`,
+      `To: ${this.sanitize(meta.sender)}`,
+      `From: ${this.sanitize(this.userEmail)}`,
+      `Subject: ${this.encodeHeader(subject)}`,
+      `In-Reply-To: ${this.sanitize(meta.messageId)}`,
+      `References: ${this.sanitize(meta.messageId)}`,
       'Content-Type: text/plain; charset=utf-8',
+      'Content-Transfer-Encoding: base64',
       '',
-      text,
+      encodedBody,
     ].join('\r\n');
-
-    const encodedMessage = Buffer.from(headers)
-      .toString('base64')
-      .replace(/\+/g, '-')
-      .replace(/\//g, '_')
-      .replace(/=+$/, '');
 
     try {
       await this.gmail.users.messages.send({
         userId: 'me',
-        requestBody: {
-          raw: encodedMessage,
-          threadId,
-        },
+        requestBody: { raw: this.toBase64Url(headers), threadId },
       });
       logger.info({ to: meta.sender, threadId }, 'Gmail reply sent');
+      return true;
     } catch (err) {
       logger.error({ jid, err }, 'Failed to send Gmail reply');
+      return false;
+    }
+  }
+
+  /**
+   * Compose and send a new email (not a reply) to an arbitrary recipient.
+   * Goes through the approval gate the same way as sendMessage.
+   */
+  async composeEmail(
+    to: string,
+    subject: string,
+    body: string,
+  ): Promise<boolean> {
+    if (!this.gmail) {
+      logger.warn('Gmail not initialized');
+      return false;
+    }
+
+    if (!this.enforceOutgoingRateLimit('compose')) return false;
+
+    if (this.approvalGate) {
+      const approved = await this.approvalGate({ to, subject, body });
+      if (!approved) {
+        logger.info(
+          { to, subject },
+          'New Gmail message blocked by approval gate',
+        );
+        return false;
+      }
+    }
+
+    const encodedBody = Buffer.from(body).toString('base64');
+    const headers = [
+      `To: ${this.sanitize(to)}`,
+      `From: ${this.sanitize(this.userEmail)}`,
+      `Subject: ${this.encodeHeader(this.sanitize(subject))}`,
+      'Content-Type: text/plain; charset=utf-8',
+      'Content-Transfer-Encoding: base64',
+      '',
+      encodedBody,
+    ].join('\r\n');
+
+    try {
+      await this.gmail.users.messages.send({
+        userId: 'me',
+        requestBody: { raw: this.toBase64Url(headers) },
+      });
+      logger.info({ to, subject }, 'New Gmail message sent');
+      return true;
+    } catch (err) {
+      logger.error({ to, subject, err }, 'Failed to send new Gmail message');
+      return false;
     }
   }
 
@@ -205,6 +278,45 @@ export class GmailChannel implements Channel {
   }
 
   // --- Private ---
+
+  private sanitize(s: string): string {
+    return s.replace(/[\r\n]/g, ' ');
+  }
+
+  private encodeHeader(s: string): string {
+    return /[^\x00-\x7F]/.test(s)
+      ? `=?UTF-8?B?${Buffer.from(s).toString('base64')}?=`
+      : s;
+  }
+
+  private toBase64Url(raw: string): string {
+    return Buffer.from(raw)
+      .toString('base64')
+      .replace(/\+/g, '-')
+      .replace(/\//g, '_')
+      .replace(/=+$/, '');
+  }
+
+  /** Returns true if send is allowed; false (and logs) if rate limit exceeded. */
+  private enforceOutgoingRateLimit(operation: string): boolean {
+    const now = Date.now();
+    this.outgoingTimestamps = this.outgoingTimestamps.filter(
+      (t) => t > now - GMAIL_RATE_LIMIT_WINDOW_MS,
+    );
+    if (this.outgoingTimestamps.length >= GMAIL_RATE_LIMIT_OUTGOING) {
+      logger.warn(
+        {
+          count: this.outgoingTimestamps.length,
+          limit: GMAIL_RATE_LIMIT_OUTGOING,
+          operation,
+        },
+        'Gmail outgoing rate limit exceeded',
+      );
+      return false;
+    }
+    this.outgoingTimestamps.push(now);
+    return true;
+  }
 
   private buildQuery(): string {
     return 'is:unread category:primary';
@@ -395,45 +507,6 @@ export class GmailChannel implements Channel {
         return;
       }
     }
-
-    // Rate limiting
-    const now = Date.now();
-    const windowStart = now - GMAIL_RATE_LIMIT_WINDOW_MS;
-
-    // Prune old timestamps
-    const senderTs = (this.senderTimestamps.get(senderEmail) || []).filter(
-      (t) => t > windowStart,
-    );
-    this.globalTimestamps = this.globalTimestamps.filter(
-      (t) => t > windowStart,
-    );
-
-    if (senderTs.length >= GMAIL_RATE_LIMIT_PER_SENDER) {
-      logger.warn(
-        {
-          from: senderEmail,
-          count: senderTs.length,
-          limitPerSender: GMAIL_RATE_LIMIT_PER_SENDER,
-        },
-        'Gmail rate limit exceeded for sender — skipping',
-      );
-      return;
-    }
-    if (this.globalTimestamps.length >= GMAIL_RATE_LIMIT_GLOBAL) {
-      logger.warn(
-        {
-          count: this.globalTimestamps.length,
-          limitGlobal: GMAIL_RATE_LIMIT_GLOBAL,
-        },
-        'Gmail global rate limit exceeded — skipping',
-      );
-      return;
-    }
-
-    // Record this email against the rate limit
-    senderTs.push(now);
-    this.senderTimestamps.set(senderEmail, senderTs);
-    this.globalTimestamps.push(now);
 
     // Extract body text
     const body = this.extractTextBody(msg.data.payload);
