@@ -6,17 +6,24 @@
  * rolled back and saved again, group B's cursor would be overwritten.
  *
  * The fix: saveState(chatJid) does a synchronous read-modify-write of only
- * the specified group's entry in the DB JSON blob. We replicate that logic
- * here to verify isolation without importing the full index.ts module.
+ * the specified group's entry in the DB JSON blob. These tests exercise the
+ * actual _saveState() / _setLastAgentTimestamp() exports from index.ts.
  */
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 
-// Mock config and logger to avoid circular dependency issues
+// Mock heavy dependencies that index.ts imports so the module can load
+// without starting the actual message loop or connecting to services.
 vi.mock('./config.js', () => ({
   ASSISTANT_NAME: 'TestBot',
   DATA_DIR: '/tmp/nanoclaw-test-data',
   DEFAULT_MESSAGE_LIMIT: 100,
   STORE_DIR: '/tmp/nanoclaw-test-store',
+  GROUPS_DIR: '/tmp/nanoclaw-test-groups',
+  TRIGGER_PATTERN: /TestBot/i,
+  CONTAINER_TIMEOUT_MS: 60000,
+  REACTION_TRANSITION_DELAY_MS: 2000,
+  MAX_CONTAINER_OUTPUT_SIZE: 100000,
+  CREDENTIAL_PROXY_PORT: 0,
 }));
 
 vi.mock('./logger.js', () => ({
@@ -30,36 +37,46 @@ vi.mock('./logger.js', () => ({
 
 vi.mock('./group-folder.js', () => ({
   isValidGroupFolder: () => true,
+  resolveGroupFolderPath: () => '/tmp/nanoclaw-test-groups/test',
+}));
+
+// Prevent side-effects from channel imports
+vi.mock('./channels/index.js', () => ({}));
+vi.mock('./ipc.js', () => ({ startIpcWatcher: vi.fn() }));
+vi.mock('./task-scheduler.js', () => ({ startSchedulerLoop: vi.fn() }));
+vi.mock('./credential-proxy.js', () => ({
+  startCredentialProxy: vi.fn(),
+  detectAuthMode: () => 'api-key',
+}));
+vi.mock('./container-runner.js', () => ({
+  runContainerAgent: vi.fn(),
+}));
+vi.mock('./router.js', () => ({
+  findChannel: vi.fn(),
+  formatMessages: vi.fn(),
+  formatOutbound: vi.fn(),
+  escapeXml: vi.fn(),
+}));
+vi.mock('./reaction-tracker.js', () => ({
+  ReactionTracker: vi.fn(),
+}));
+vi.mock('./group-queue.js', () => ({
+  GroupQueue: class {
+    enqueue = vi.fn();
+  },
+}));
+vi.mock('./sender-allowlist.js', () => ({
+  isSenderAllowed: vi.fn().mockReturnValue(true),
+  isTriggerAllowed: vi.fn().mockReturnValue(true),
+  loadSenderAllowlist: vi.fn(),
 }));
 
 import { _initTestDatabase, getRouterState, setRouterState } from './db.js';
-
-/**
- * Replicates the per-group cursor save logic from saveState(chatJid) in index.ts.
- * This is the fixed version: read DB, patch one key, write back.
- */
-function saveGroupCursor(
-  chatJid: string,
-  lastAgentTimestamp: Record<string, string>,
-): void {
-  const raw = getRouterState('last_agent_timestamp');
-  let stored: Record<string, string> = {};
-  try {
-    stored = raw ? JSON.parse(raw) : {};
-  } catch {
-    stored = {};
-  }
-  stored[chatJid] = lastAgentTimestamp[chatJid] ?? '';
-  setRouterState('last_agent_timestamp', JSON.stringify(stored));
-}
-
-/**
- * Replicates the OLD buggy saveState() that writes the entire map at once.
- * Used to demonstrate the bug in the "before fix" test case.
- */
-function saveAllCursors(lastAgentTimestamp: Record<string, string>): void {
-  setRouterState('last_agent_timestamp', JSON.stringify(lastAgentTimestamp));
-}
+import {
+  _saveState,
+  _setLastAgentTimestamp,
+  _getLastAgentTimestamp,
+} from './index.js';
 
 beforeEach(() => {
   _initTestDatabase();
@@ -67,7 +84,6 @@ beforeEach(() => {
 
 describe('cursor isolation (per-group saveState)', () => {
   it('saving group A cursor does not affect group B cursor', () => {
-    // Both groups have cursors in DB
     setRouterState(
       'last_agent_timestamp',
       JSON.stringify({
@@ -76,14 +92,12 @@ describe('cursor isolation (per-group saveState)', () => {
       }),
     );
 
-    // Group A advances its in-memory cursor
-    const inMemory: Record<string, string> = {
+    _setLastAgentTimestamp({
       'groupA@g.us': '2024-01-01T00:00:05.000Z',
       'groupB@g.us': '2024-01-01T00:00:02.000Z',
-    };
+    });
 
-    // Save only group A using the fixed per-group logic
-    saveGroupCursor('groupA@g.us', inMemory);
+    _saveState('groupA@g.us');
 
     const stored = JSON.parse(getRouterState('last_agent_timestamp')!);
     expect(stored['groupA@g.us']).toBe('2024-01-01T00:00:05.000Z');
@@ -91,7 +105,6 @@ describe('cursor isolation (per-group saveState)', () => {
   });
 
   it('rolling back group A cursor does not overwrite group B advanced cursor', () => {
-    // Initial: both groups at some cursor
     setRouterState(
       'last_agent_timestamp',
       JSON.stringify({
@@ -100,38 +113,35 @@ describe('cursor isolation (per-group saveState)', () => {
       }),
     );
 
-    // Step 1: Group A advances cursor and saves
-    const memoryAfterA: Record<string, string> = {
+    // Step 1: Group A advances and saves
+    _setLastAgentTimestamp({
       'groupA@g.us': '2024-01-01T00:00:10.000Z',
       'groupB@g.us': '2024-01-01T00:00:02.000Z',
-    };
-    saveGroupCursor('groupA@g.us', memoryAfterA);
+    });
+    _saveState('groupA@g.us');
 
-    // Step 2: Group B advances cursor and saves
-    const memoryAfterB: Record<string, string> = {
+    // Step 2: Group B advances and saves
+    _setLastAgentTimestamp({
       'groupA@g.us': '2024-01-01T00:00:10.000Z',
       'groupB@g.us': '2024-01-01T00:00:20.000Z',
-    };
-    saveGroupCursor('groupB@g.us', memoryAfterB);
+    });
+    _saveState('groupB@g.us');
 
-    // Step 3: Group A errors and rolls back its cursor
-    const memoryAfterRollback: Record<string, string> = {
-      'groupA@g.us': '2024-01-01T00:00:01.000Z', // rolled back
+    // Step 3: Group A rolls back and saves
+    _setLastAgentTimestamp({
+      'groupA@g.us': '2024-01-01T00:00:01.000Z',
       'groupB@g.us': '2024-01-01T00:00:20.000Z',
-    };
-    saveGroupCursor('groupA@g.us', memoryAfterRollback);
+    });
+    _saveState('groupA@g.us');
 
-    // Verify: A rolled back, B still at its advanced position
     const stored = JSON.parse(getRouterState('last_agent_timestamp')!);
     expect(stored['groupA@g.us']).toBe('2024-01-01T00:00:01.000Z');
     expect(stored['groupB@g.us']).toBe('2024-01-01T00:00:20.000Z');
   });
 
-  it('demonstrates the old bug: full-map save causes cross-group cursor clobber', () => {
-    // This test demonstrates the bug that existed before the fix.
-    // The old saveState() wrote the entire in-memory map, so a stale
-    // in-memory snapshot of group B's cursor could overwrite DB.
-
+  it('simulates cross-group clobber that the fix prevents', () => {
+    // This test proves the fix works: even when in-memory has a stale view
+    // of group B, saving only group A doesn't touch group B in the DB.
     setRouterState(
       'last_agent_timestamp',
       JSON.stringify({
@@ -140,33 +150,32 @@ describe('cursor isolation (per-group saveState)', () => {
       }),
     );
 
-    // Group A's in-memory view (before B advances)
-    const memoryA: Record<string, string> = {
+    // Group B advances and saves
+    _setLastAgentTimestamp({
+      'groupA@g.us': '2024-01-01T00:00:01.000Z',
+      'groupB@g.us': '2024-01-01T00:00:20.000Z',
+    });
+    _saveState('groupB@g.us');
+
+    // Group A has a stale in-memory view of B (hasn't seen B's advance)
+    _setLastAgentTimestamp({
       'groupA@g.us': '2024-01-01T00:00:10.000Z',
       'groupB@g.us': '2024-01-01T00:00:02.000Z', // stale!
-    };
-
-    // Group B advances in its own async context
-    const memoryB: Record<string, string> = {
-      'groupA@g.us': '2024-01-01T00:00:10.000Z',
-      'groupB@g.us': '2024-01-01T00:00:20.000Z',
-    };
-    saveAllCursors(memoryB); // B saves its advance
-
-    // Now A saves with its stale view — this clobbers B!
-    saveAllCursors(memoryA);
+    });
+    _saveState('groupA@g.us');
 
     const stored = JSON.parse(getRouterState('last_agent_timestamp')!);
-    // With the old code, B's cursor was clobbered back to the stale value
-    expect(stored['groupB@g.us']).toBe('2024-01-01T00:00:02.000Z'); // BUG: B lost its advance
+    expect(stored['groupA@g.us']).toBe('2024-01-01T00:00:10.000Z');
+    // B must NOT be clobbered back to stale value
+    expect(stored['groupB@g.us']).toBe('2024-01-01T00:00:20.000Z');
   });
 
   it('per-group save works when DB has no prior last_agent_timestamp', () => {
-    const memory: Record<string, string> = {
+    _setLastAgentTimestamp({
       'groupA@g.us': '2024-01-01T00:00:01.000Z',
-    };
+    });
 
-    saveGroupCursor('groupA@g.us', memory);
+    _saveState('groupA@g.us');
 
     const stored = JSON.parse(getRouterState('last_agent_timestamp')!);
     expect(stored['groupA@g.us']).toBe('2024-01-01T00:00:01.000Z');
@@ -175,18 +184,17 @@ describe('cursor isolation (per-group saveState)', () => {
   it('per-group save works when DB has corrupted JSON', () => {
     setRouterState('last_agent_timestamp', 'NOT_JSON{{{');
 
-    const memory: Record<string, string> = {
+    _setLastAgentTimestamp({
       'groupA@g.us': '2024-01-01T00:00:01.000Z',
-    };
+    });
 
-    saveGroupCursor('groupA@g.us', memory);
+    _saveState('groupA@g.us');
 
     const stored = JSON.parse(getRouterState('last_agent_timestamp')!);
     expect(stored['groupA@g.us']).toBe('2024-01-01T00:00:01.000Z');
   });
 
   it('per-group save preserves cursors for groups not in memory', () => {
-    // DB has groups A, B, C
     setRouterState(
       'last_agent_timestamp',
       JSON.stringify({
@@ -196,12 +204,11 @@ describe('cursor isolation (per-group saveState)', () => {
       }),
     );
 
-    // In-memory only knows about A (e.g., partial load)
-    const memory: Record<string, string> = {
+    _setLastAgentTimestamp({
       'groupA@g.us': '2024-01-01T00:00:05.000Z',
-    };
+    });
 
-    saveGroupCursor('groupA@g.us', memory);
+    _saveState('groupA@g.us');
 
     const stored = JSON.parse(getRouterState('last_agent_timestamp')!);
     expect(stored['groupA@g.us']).toBe('2024-01-01T00:00:05.000Z');
