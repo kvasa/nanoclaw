@@ -92,9 +92,35 @@ function loadState(): void {
   );
 }
 
-function saveState(): void {
+/**
+ * Save router state to DB.
+ *
+ * When `chatJid` is provided, only that group's cursor is persisted via a
+ * synchronous read-modify-write of the `last_agent_timestamp` JSON blob.
+ * Because there is no `await` inside this path, the Node.js event loop
+ * guarantees no interleaving — so group A saving its cursor can never
+ * clobber group B's cursor.
+ *
+ * When called without arguments (initial boot / global timestamp update),
+ * the full in-memory map is flushed.
+ */
+function saveState(chatJid?: string): void {
   setRouterState('last_timestamp', lastTimestamp);
-  setRouterState('last_agent_timestamp', JSON.stringify(lastAgentTimestamp));
+
+  if (chatJid) {
+    // Atomic per-group cursor update: read current DB value, patch one key, write back.
+    const raw = getRouterState('last_agent_timestamp');
+    let stored: Record<string, string> = {};
+    try {
+      stored = raw ? JSON.parse(raw) : {};
+    } catch {
+      stored = {};
+    }
+    stored[chatJid] = lastAgentTimestamp[chatJid] ?? '';
+    setRouterState('last_agent_timestamp', JSON.stringify(stored));
+  } else {
+    setRouterState('last_agent_timestamp', JSON.stringify(lastAgentTimestamp));
+  }
 }
 
 function registerGroup(jid: string, group: RegisteredGroup): void {
@@ -134,6 +160,23 @@ export function _setRegisteredGroups(
   groups: Record<string, RegisteredGroup>,
 ): void {
   registeredGroups = groups;
+}
+
+/** @internal - exported for testing cursor isolation */
+export function _saveState(chatJid?: string): void {
+  saveState(chatJid);
+}
+
+/** @internal - exported for testing cursor isolation */
+export function _setLastAgentTimestamp(
+  timestamps: Record<string, string>,
+): void {
+  lastAgentTimestamp = timestamps;
+}
+
+/** @internal - exported for testing cursor isolation */
+export function _getLastAgentTimestamp(): Record<string, string> {
+  return lastAgentTimestamp;
 }
 
 /** Find the last non-bot message ID (for reaction targeting). */
@@ -188,7 +231,7 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
   const previousCursor = lastAgentTimestamp[chatJid] || '';
   lastAgentTimestamp[chatJid] =
     missedMessages[missedMessages.length - 1].timestamp;
-  saveState();
+  saveState(chatJid);
 
   logger.info(
     { group: group.name, messageCount: missedMessages.length },
@@ -261,7 +304,7 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
     }
     // Roll back cursor so retries can re-process these messages
     lastAgentTimestamp[chatJid] = previousCursor;
-    saveState();
+    saveState(chatJid);
     logger.warn(
       { group: group.name },
       'Agent error, rolled back message cursor for retry',
@@ -435,7 +478,7 @@ async function startMessageLoop(): Promise<void> {
             );
             lastAgentTimestamp[chatJid] =
               messagesToSend[messagesToSend.length - 1].timestamp;
-            saveState();
+            saveState(chatJid);
             // Show typing indicator while the container processes the piped message
             channel.setTyping?.(chatJid, true);
             const pipedMsgId = findLastUserMessageId(messagesToSend);

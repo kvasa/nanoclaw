@@ -21,6 +21,7 @@ import {
 // Slack's chat.postMessage API limits text to ~4000 characters per call.
 // Messages exceeding this are split into sequential chunks.
 const MAX_MESSAGE_LENGTH = 4000;
+const MAX_OUTGOING_QUEUE_SIZE = 1000;
 
 // The message subtypes we process. Bolt delivers all subtypes via app.event('message');
 // we filter to regular messages (GenericMessageEvent, subtype undefined) and bot messages
@@ -194,7 +195,7 @@ export class SlackChannel implements Channel {
     const channelId = jid.replace(/^slack:/, '');
 
     if (!this.connected) {
-      this.outgoingQueue.push({ jid, text });
+      this.enqueue(jid, text);
       logger.info(
         { jid, queueSize: this.outgoingQueue.length },
         'Slack disconnected, message queued',
@@ -216,7 +217,7 @@ export class SlackChannel implements Channel {
       }
       logger.info({ jid, length: text.length }, 'Slack message sent');
     } catch (err) {
-      this.outgoingQueue.push({ jid, text });
+      this.enqueue(jid, text);
       logger.warn(
         { jid, err, queueSize: this.outgoingQueue.length },
         'Failed to send Slack message, queued',
@@ -489,6 +490,18 @@ export class SlackChannel implements Channel {
       logger.debug({ userId, err }, 'Failed to resolve Slack user name');
       return undefined;
     }
+  }
+
+  /** Add a message to the outgoing queue, dropping the oldest if at capacity. */
+  private enqueue(jid: string, text: string): void {
+    if (this.outgoingQueue.length >= MAX_OUTGOING_QUEUE_SIZE) {
+      const dropped = this.outgoingQueue.shift();
+      logger.warn(
+        { jid, droppedJid: dropped?.jid, queueSize: this.outgoingQueue.length },
+        'Slack outgoing queue full, dropping oldest message',
+      );
+    }
+    this.outgoingQueue.push({ jid, text });
   }
 
   private async flushOutgoingQueue(): Promise<void> {

@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
   isSenderAllowed,
+  invalidateSenderAllowlistCache,
   isTriggerAllowed,
   loadSenderAllowlist,
   SenderAllowlistConfig,
@@ -25,9 +26,11 @@ function writeConfig(config: unknown, name?: string): string {
 
 beforeEach(() => {
   tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'allowlist-test-'));
+  invalidateSenderAllowlistCache();
 });
 
 afterEach(() => {
+  invalidateSenderAllowlistCache();
   fs.rmSync(tmpDir, { recursive: true, force: true });
 });
 
@@ -99,6 +102,34 @@ describe('loadSenderAllowlist', () => {
     });
     const cfg = loadSenderAllowlist(p);
     expect(cfg.default.allow).toBe('*'); // falls back to default
+  });
+
+  it('caches result within TTL — second call does not re-read file', () => {
+    const p = writeConfig({
+      default: { allow: '*', mode: 'trigger' },
+      chats: {},
+    });
+    const cfg1 = loadSenderAllowlist(p);
+    // Overwrite file — cached result should still be returned
+    fs.writeFileSync(p, '{ not valid json }}}');
+    const cfg2 = loadSenderAllowlist(p);
+    expect(cfg2).toBe(cfg1); // same object reference = from cache
+  });
+
+  it('invalidateCache causes next call to re-read file', () => {
+    const p = writeConfig({
+      default: { allow: '*', mode: 'trigger' },
+      chats: {},
+    });
+    loadSenderAllowlist(p);
+    // Modify file and invalidate
+    fs.writeFileSync(
+      p,
+      JSON.stringify({ default: { allow: [], mode: 'drop' }, chats: {} }),
+    );
+    invalidateSenderAllowlistCache();
+    const cfg = loadSenderAllowlist(p);
+    expect(cfg.default.allow).toEqual([]);
   });
 
   it('skips invalid per-chat entries', () => {
