@@ -113,7 +113,11 @@ export function startIpcWatcher(deps: IpcDeps): void {
                     'Unauthorized IPC message attempt blocked',
                   );
                 } else if (data.type === 'message') {
-                  await deps.sendMessage(data.chatJid, data.text, data.threadTs);
+                  await deps.sendMessage(
+                    data.chatJid,
+                    data.text,
+                    data.threadTs,
+                  );
                   logger.info(
                     { chatJid: data.chatJid, sourceGroup },
                     'IPC message sent',

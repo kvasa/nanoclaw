@@ -192,7 +192,11 @@ export class SlackChannel implements Channel {
     await this.syncChannelMetadata();
   }
 
-  async sendMessage(jid: string, text: string, threadTs?: string): Promise<void> {
+  async sendMessage(
+    jid: string,
+    text: string,
+    threadTs?: string,
+  ): Promise<void> {
     const channelId = jid.replace(/^slack:/, '');
 
     if (!this.connected) {
@@ -208,7 +212,11 @@ export class SlackChannel implements Channel {
       const threadOpts = threadTs ? { thread_ts: threadTs } : {};
       // Slack limits messages to ~4000 characters; split if needed
       if (text.length <= MAX_MESSAGE_LENGTH) {
-        await this.app.client.chat.postMessage({ channel: channelId, text, ...threadOpts });
+        await this.app.client.chat.postMessage({
+          channel: channelId,
+          text,
+          ...threadOpts,
+        });
       } else {
         for (let i = 0; i < text.length; i += MAX_MESSAGE_LENGTH) {
           await this.app.client.chat.postMessage({

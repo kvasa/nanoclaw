@@ -1148,7 +1148,10 @@ describe('SlackChannel', () => {
       const channel = new SlackChannel(opts);
       await channel.connect();
 
-      const event = createMessageEvent({ ts: '1704067200.000000', text: 'Hello' });
+      const event = createMessageEvent({
+        ts: '1704067200.000000',
+        text: 'Hello',
+      });
       await triggerMessageEvent(event);
 
       expect(opts.onMessage).toHaveBeenCalledWith(
@@ -1164,7 +1167,11 @@ describe('SlackChannel', () => {
       const channel = new SlackChannel(opts);
       await channel.connect();
 
-      await channel.sendMessage('slack:C0123456789', 'Reply in thread', '1704067200.000000');
+      await channel.sendMessage(
+        'slack:C0123456789',
+        'Reply in thread',
+        '1704067200.000000',
+      );
 
       expect(currentApp().client.chat.postMessage).toHaveBeenCalledWith({
         channel: 'C0123456789',
@@ -1192,7 +1199,11 @@ describe('SlackChannel', () => {
       await channel.connect();
 
       const longText = 'X'.repeat(4500);
-      await channel.sendMessage('slack:C0123456789', longText, '1704067200.000000');
+      await channel.sendMessage(
+        'slack:C0123456789',
+        longText,
+        '1704067200.000000',
+      );
 
       // Both chunks should include thread_ts
       expect(currentApp().client.chat.postMessage).toHaveBeenCalledTimes(2);

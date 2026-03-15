@@ -341,7 +341,12 @@ export async function runContainerAgent(
   if (input.triggerMessageTs) {
     // Insert env args before the image name (last element)
     const imageIdx = containerArgs.lastIndexOf(CONTAINER_IMAGE);
-    containerArgs.splice(imageIdx, 0, '-e', `NANOCLAW_THREAD_TS=${input.triggerMessageTs}`);
+    containerArgs.splice(
+      imageIdx,
+      0,
+      '-e',
+      `NANOCLAW_THREAD_TS=${input.triggerMessageTs}`,
+    );
   }
 
   logger.debug(
