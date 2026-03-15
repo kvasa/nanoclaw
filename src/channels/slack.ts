@@ -97,8 +97,8 @@ export class SlackChannel implements Channel {
       if (!msg.text && (!files || files.length === 0)) return;
 
       // Threaded replies are flattened into the channel conversation.
-      // The agent sees them alongside channel-level messages; responses
-      // always go to the channel, not back into the thread.
+      // The agent sees them alongside channel-level messages.
+      // Progress updates are sent to the thread; final response goes to the channel.
 
       const jid = `slack:${msg.channel}`;
       const timestamp = new Date(parseFloat(msg.ts) * 1000).toISOString();
@@ -164,7 +164,8 @@ export class SlackChannel implements Channel {
         timestamp,
         is_from_me: isBotMessage,
         is_bot_message: isBotMessage,
-        threadTs: msg.ts,
+        threadTs:
+          (event as unknown as { thread_ts?: string }).thread_ts || msg.ts,
       });
     });
   }

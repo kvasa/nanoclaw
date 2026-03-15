@@ -254,7 +254,7 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
   };
 
   // Extract the trigger message timestamp for Slack thread replies.
-  // All progress updates and the final response are sent as replies to this message.
+  // Progress updates (via IPC) are sent as thread replies; final response goes to main channel.
   let triggerTs: string | undefined;
   for (let i = missedMessages.length - 1; i >= 0; i--) {
     if (!missedMessages[i].is_bot_message) {
