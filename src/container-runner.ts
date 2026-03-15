@@ -45,6 +45,7 @@ export interface ContainerInput {
   isScheduledTask?: boolean;
   assistantName?: string;
   enabledMcpServers?: string[];
+  triggerMessageTs?: string;
 }
 
 export interface ContainerOutput {
@@ -333,6 +334,15 @@ export async function runContainerAgent(
     containerName,
     input.enabledMcpServers,
   );
+
+  // Inject trigger message timestamp for Slack thread replies.
+  // The agent-runner MCP reads this env var and includes it in IPC messages
+  // so the host can reply in the correct thread.
+  if (input.triggerMessageTs) {
+    // Insert env args before the image name (last element)
+    const imageIdx = containerArgs.lastIndexOf(CONTAINER_IMAGE);
+    containerArgs.splice(imageIdx, 0, '-e', `NANOCLAW_THREAD_TS=${input.triggerMessageTs}`);
+  }
 
   logger.debug(
     {

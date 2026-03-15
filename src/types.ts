@@ -52,6 +52,7 @@ export interface NewMessage {
   timestamp: string;
   is_from_me?: boolean;
   is_bot_message?: boolean;
+  threadTs?: string;
 }
 
 export interface ScheduledTask {
@@ -89,7 +90,7 @@ export interface SendFileOptions {
 export interface Channel {
   name: string;
   connect(): Promise<void>;
-  sendMessage(jid: string, text: string): Promise<void>;
+  sendMessage(jid: string, text: string, threadTs?: string): Promise<void>;
   sendFile?(
     jid: string,
     filePath: string,

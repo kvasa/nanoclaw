@@ -22,7 +22,7 @@ import { synthesizeSpeech, TtsVoice } from './tts.js';
 import { RegisteredGroup, SendFileOptions } from './types.js';
 
 export interface IpcDeps {
-  sendMessage: (jid: string, text: string) => Promise<void>;
+  sendMessage: (jid: string, text: string, threadTs?: string) => Promise<void>;
   sendFile: (
     jid: string,
     filePath: string,
@@ -113,7 +113,7 @@ export function startIpcWatcher(deps: IpcDeps): void {
                     'Unauthorized IPC message attempt blocked',
                   );
                 } else if (data.type === 'message') {
-                  await deps.sendMessage(data.chatJid, data.text);
+                  await deps.sendMessage(data.chatJid, data.text, data.threadTs);
                   logger.info(
                     { chatJid: data.chatJid, sourceGroup },
                     'IPC message sent',

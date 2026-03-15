@@ -110,7 +110,7 @@ export class GmailChannel implements Channel {
     schedulePoll();
   }
 
-  async sendMessage(jid: string, text: string): Promise<void> {
+  async sendMessage(jid: string, text: string, _threadTs?: string): Promise<void> {
     if (!this.gmail) {
       logger.warn('Gmail not initialized');
       return;

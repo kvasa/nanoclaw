@@ -253,6 +253,16 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
     }, IDLE_TIMEOUT);
   };
 
+  // Extract the trigger message timestamp for Slack thread replies.
+  // All progress updates and the final response are sent as replies to this message.
+  let triggerTs: string | undefined;
+  for (let i = missedMessages.length - 1; i >= 0; i--) {
+    if (!missedMessages[i].is_bot_message) {
+      triggerTs = missedMessages[i].threadTs;
+      break;
+    }
+  }
+
   await channel.setTyping?.(chatJid, true);
   const reactedMsgId = findLastUserMessageId(missedMessages);
   const reaction = new ReactionTracker(channel, chatJid, reactedMsgId);
@@ -260,7 +270,7 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
   let hadError = false;
   let outputSentToUser = false;
 
-  const output = await runAgent(group, prompt, chatJid, async (result) => {
+  const output = await runAgent(group, prompt, chatJid, triggerTs, async (result) => {
     // Streaming output callback — called for each agent result
     if (result.result) {
       const raw =
@@ -271,7 +281,7 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
       const text = raw.replace(/<internal>[\s\S]*?<\/internal>/g, '').trim();
       logger.info({ group: group.name }, `Agent output: ${raw.slice(0, 200)}`);
       if (text) {
-        await channel.sendMessage(chatJid, text);
+        await channel.sendMessage(chatJid, text, triggerTs);
         outputSentToUser = true;
       }
       await reaction.finalize('white_check_mark');
@@ -320,6 +330,7 @@ async function runAgent(
   group: RegisteredGroup,
   prompt: string,
   chatJid: string,
+  triggerMessageTs?: string,
   onOutput?: (output: ContainerOutput) => Promise<void>,
 ): Promise<'success' | 'error'> {
   const isMain = group.isMain === true;
@@ -391,6 +402,7 @@ async function runAgent(
         chatJid,
         isMain,
         enabledMcpServers: group.containerConfig?.enabledMcpServers,
+        triggerMessageTs,
       },
       (proc, containerName) =>
         queue.registerProcess(chatJid, proc, containerName, group.folder),
@@ -651,10 +663,10 @@ async function main(): Promise<void> {
     },
   });
   startIpcWatcher({
-    sendMessage: (jid, text) => {
+    sendMessage: (jid, text, threadTs) => {
       const channel = findChannel(channels, jid);
       if (!channel) throw new Error(`No channel for JID: ${jid}`);
-      return channel.sendMessage(jid, text);
+      return channel.sendMessage(jid, text, threadTs);
     },
     sendVoice: async (jid: string, audioBuffer: Buffer, caption?: string) => {
       const channel = findChannel(channels, jid);
