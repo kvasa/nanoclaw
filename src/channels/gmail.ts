@@ -5,6 +5,11 @@ import path from 'path';
 import { google, gmail_v1 } from 'googleapis';
 import { OAuth2Client } from 'google-auth-library';
 
+import {
+  addGmailProcessedId,
+  getRecentGmailProcessedIds,
+  pruneOldGmailProcessedIds,
+} from '../db.js';
 import { logger } from '../logger.js';
 import {
   GMAIL_ALLOWED_DOMAINS,
@@ -101,7 +106,9 @@ export class GmailChannel implements Channel {
       try {
         const current = JSON.parse(fs.readFileSync(tokensPath, 'utf-8'));
         Object.assign(current, newTokens);
-        fs.writeFileSync(tokensPath, JSON.stringify(current, null, 2));
+        fs.writeFileSync(tokensPath, JSON.stringify(current, null, 2), {
+          mode: 0o600,
+        });
         logger.debug('Gmail OAuth tokens refreshed');
       } catch (err) {
         logger.warn({ err }, 'Failed to persist refreshed Gmail tokens');
@@ -109,6 +116,12 @@ export class GmailChannel implements Channel {
     });
 
     this.gmail = google.gmail({ version: 'v1', auth: this.oauth2Client });
+
+    // Seed in-memory set from DB so restarts don't reprocess recent emails
+    pruneOldGmailProcessedIds();
+    for (const id of getRecentGmailProcessedIds()) {
+      this.processedIds.add(id);
+    }
 
     // Verify connection
     const profile = await this.gmail.users.getProfile({ userId: 'me' });
@@ -280,7 +293,9 @@ export class GmailChannel implements Channel {
   // --- Private ---
 
   private sanitize(s: string): string {
-    return s.replace(/[\r\n]/g, ' ');
+    // Strip CRLF (header injection), null bytes, and other ASCII control chars
+    // except tab (0x09) which is valid in header folding.
+    return s.replace(/[\x00-\x08\x0a-\x0d\x0e-\x1f\x7f]/g, ' ');
   }
 
   private encodeHeader(s: string): string {
@@ -338,6 +353,7 @@ export class GmailChannel implements Channel {
       for (const stub of messages) {
         if (!stub.id || this.processedIds.has(stub.id)) continue;
         this.processedIds.add(stub.id);
+        addGmailProcessedId(stub.id);
 
         await this.processMessage(stub.id);
       }
@@ -509,12 +525,20 @@ export class GmailChannel implements Channel {
     }
 
     // Extract body text
-    const body = this.extractTextBody(msg.data.payload);
+    const rawBody = this.extractTextBody(msg.data.payload);
 
-    if (!body) {
+    if (!rawBody) {
       logger.debug({ messageId, subject }, 'Skipping email with no text body');
       return;
     }
+
+    // Truncate oversized bodies to prevent context flooding
+    const BODY_MAX_CHARS = 16_000;
+    const body =
+      rawBody.length > BODY_MAX_CHARS
+        ? rawBody.slice(0, BODY_MAX_CHARS) +
+          `\n[... truncated — ${rawBody.length - BODY_MAX_CHARS} chars omitted ...]`
+        : rawBody;
 
     const chatJid = `gmail:${threadId}`;
 
@@ -547,6 +571,17 @@ export class GmailChannel implements Channel {
       );
       return;
     }
+
+    // Escape the delimiter in all untrusted fields to prevent prompt injection
+    // via delimiter spoofing (body, subject, and sender name).
+    const DELIMITER_END = '--- END EXTERNAL EMAIL ---';
+    const escapeDelimiter = (s: string) =>
+      s.replaceAll(DELIMITER_END, '--- [escaped delimiter] ---');
+
+    const safeBody = escapeDelimiter(body);
+    const safeSubject = escapeDelimiter(subject);
+    const safeSenderName = escapeDelimiter(senderName);
+    const safeSenderEmail = escapeDelimiter(senderEmail);
 
     const mainJid = mainEntry[0];
     const content = [
