@@ -19,7 +19,18 @@ const TASKS_DIR = path.join(IPC_DIR, 'tasks');
 const chatJid = process.env.NANOCLAW_CHAT_JID!;
 const groupFolder = process.env.NANOCLAW_GROUP_FOLDER!;
 const isMain = process.env.NANOCLAW_IS_MAIN === '1';
-const threadTs = process.env.NANOCLAW_THREAD_TS;
+function getThreadTs(): string | undefined {
+  const threadTsFile = path.join(IPC_DIR, 'thread_ts');
+  try {
+    if (fs.existsSync(threadTsFile)) {
+      const ts = fs.readFileSync(threadTsFile, 'utf-8').trim();
+      if (ts) return ts;
+    }
+  } catch {
+    // ignore
+  }
+  return process.env.NANOCLAW_THREAD_TS;
+}
 
 function writeIpcFile(dir: string, data: object): string {
   fs.mkdirSync(dir, { recursive: true });
@@ -53,7 +64,7 @@ server.tool(
       chatJid,
       text: args.text,
       sender: args.sender || undefined,
-      threadTs: threadTs || undefined,
+      threadTs: getThreadTs() || undefined,
       groupFolder,
       timestamp: new Date().toISOString(),
     };

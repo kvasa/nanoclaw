@@ -76,6 +76,10 @@ let messageLoopRunning = false;
 const channels: Channel[] = [];
 const queue = new GroupQueue();
 
+// In-memory store for the latest user message threadTs per chatJid.
+// threadTs is ephemeral (not persisted in DB) and used for Slack thread replies.
+const latestThreadTs: Record<string, string> = {};
+
 function loadState(): void {
   lastTimestamp = getRouterState('last_timestamp') || '';
   const agentTs = getRouterState('last_agent_timestamp');
@@ -253,14 +257,15 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
     }, IDLE_TIMEOUT);
   };
 
-  // Extract the trigger message timestamp for Slack thread replies.
+  // Use the in-memory threadTs for Slack thread replies (DB doesn't store threadTs).
   // Progress updates (via IPC) are sent as thread replies; final response goes to main channel.
-  let triggerTs: string | undefined;
-  for (let i = missedMessages.length - 1; i >= 0; i--) {
-    if (!missedMessages[i].is_bot_message) {
-      triggerTs = missedMessages[i].threadTs;
-      break;
-    }
+  const triggerTs = latestThreadTs[chatJid];
+  // Clear after use so stale values don't leak to future invocations
+  delete latestThreadTs[chatJid];
+  // Write threadTs to file so the container can read it dynamically
+  // (env var is only set once at container start, but messages can be piped later)
+  if (triggerTs) {
+    queue.updateThreadTs(chatJid, triggerTs);
   }
 
   await channel.setTyping?.(chatJid, true);
@@ -529,6 +534,12 @@ async function startMessageLoop(): Promise<void> {
           const formatted = formatMessages(messagesToSend, TIMEZONE);
 
           if (queue.sendMessage(chatJid, formatted)) {
+            // Update threadTs file so the container uses the new message's thread
+            const pipedThreadTs = latestThreadTs[chatJid];
+            if (pipedThreadTs) {
+              queue.updateThreadTs(chatJid, pipedThreadTs);
+              delete latestThreadTs[chatJid];
+            }
             logger.debug(
               { chatJid, count: messagesToSend.length },
               'Piped messages to active container',
@@ -620,6 +631,10 @@ async function main(): Promise<void> {
           }
           return;
         }
+      }
+      // Preserve threadTs in memory for Slack thread replies (not stored in DB)
+      if (msg.threadTs && !msg.is_bot_message) {
+        latestThreadTs[chatJid] = msg.threadTs;
       }
       storeMessage(msg);
     },
