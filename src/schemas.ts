@@ -63,6 +63,8 @@ export const IpcFileMessageSchema = z.discriminatedUnion('type', [
   IpcMessageSchema,
   IpcSendFileSchema,
   IpcSendVoiceSchema,
+  IpcSendEmailSchema,
+  IpcComposeEmailSchema,
 ]);
 
 // --- IPC Task Schemas (processTaskIpc) ---
