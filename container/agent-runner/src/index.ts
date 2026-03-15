@@ -130,6 +130,86 @@ function log(message: string): void {
   console.error(`[agent-runner] ${message}`);
 }
 
+const IPC_DIR = '/workspace/ipc';
+const IPC_MESSAGES_DIR = path.join(IPC_DIR, 'messages');
+
+function getThreadTs(): string | undefined {
+  // Read from file first (updated dynamically when messages are piped),
+  // fall back to env var (set at container start).
+  const threadTsFile = path.join(IPC_DIR, 'thread_ts');
+  try {
+    if (fs.existsSync(threadTsFile)) {
+      const ts = fs.readFileSync(threadTsFile, 'utf-8').trim();
+      if (ts) return ts;
+    }
+  } catch {
+    // ignore read errors
+  }
+  return process.env.NANOCLAW_THREAD_TS;
+}
+
+function sendProgressUpdate(
+  chatJid: string,
+  groupFolder: string,
+  text: string,
+): void {
+  const threadTs = getThreadTs();
+  if (!threadTs) return; // No thread context — skip progress updates
+
+  fs.mkdirSync(IPC_MESSAGES_DIR, { recursive: true });
+  const filename = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}.json`;
+  const filepath = path.join(IPC_MESSAGES_DIR, filename);
+  const tempPath = `${filepath}.tmp`;
+  fs.writeFileSync(
+    tempPath,
+    JSON.stringify({
+      type: 'message',
+      chatJid,
+      text,
+      threadTs,
+      groupFolder,
+      timestamp: new Date().toISOString(),
+    }),
+  );
+  fs.renameSync(tempPath, filepath);
+}
+
+function truncate(s: string, max: number): string {
+  return s.length > max ? s.slice(0, max) + '…' : s;
+}
+
+function describeToolCall(
+  name: string,
+  input: Record<string, unknown>,
+): string | null {
+  switch (name) {
+    case 'WebSearch':
+      return `🔍 Hledám: _${truncate(String(input.query || ''), 100)}_`;
+    case 'WebFetch':
+      return `🌐 Stahuji: _${truncate(String(input.url || ''), 80)}_`;
+    case 'Bash': {
+      const cmd = truncate(String(input.command || ''), 120);
+      return `⚡ Příkaz: \`${cmd}\``;
+    }
+    case 'Read':
+      return `📄 Čtu: \`${truncate(String(input.file_path || ''), 80)}\``;
+    case 'Write':
+      return `✏️ Zapisuji: \`${truncate(String(input.file_path || ''), 80)}\``;
+    case 'Edit':
+      return `✏️ Upravuji: \`${truncate(String(input.file_path || ''), 80)}\``;
+    case 'Glob':
+      return `🔎 Hledám soubory: \`${truncate(String(input.pattern || ''), 60)}\``;
+    case 'Grep':
+      return `🔎 Hledám v kódu: _${truncate(String(input.pattern || ''), 60)}_`;
+    case 'Task':
+    case 'TeamCreate':
+      return `🔀 Spouštím podúkol…`;
+    default:
+      // MCP tools, NanoClaw tools, etc. — skip
+      return null;
+  }
+}
+
 function getSessionSummary(
   sessionId: string,
   transcriptPath: string,
@@ -484,6 +564,14 @@ async function runQuery(
   );
   log(`[prompt] ${containerInput.prompt}`);
 
+  // Send initial progress update to create the Slack thread
+  sendProgressUpdate(
+    containerInput.chatJid,
+    containerInput.groupFolder,
+    'Zpracovávám…',
+  );
+
+  let sentComposingProgress = false;
   for await (const message of query({
     prompt: stream,
     options: {
@@ -545,13 +633,36 @@ async function runQuery(
       inner?.content ?? (message as Record<string, unknown>).content;
 
     if (message.type === 'assistant' && Array.isArray(content)) {
+      const hasToolUse = content.some(
+        (b: { type: string }) => b.type === 'tool_use',
+      );
       for (const block of content) {
         if (block.type === 'text' && block.text) {
           log(`[assistant] ${trunc(block.text as string)}`);
+          // Send "composing" progress when assistant responds with text only (no tools)
+          if (!hasToolUse && !sentComposingProgress) {
+            sentComposingProgress = true;
+            sendProgressUpdate(
+              containerInput.chatJid,
+              containerInput.groupFolder,
+              '💬 Formuluji odpověď…',
+            );
+          }
         } else if (block.type === 'tool_use') {
           log(
             `[tool_call] ${block.name}(${trunc(JSON.stringify(block.input ?? {}), 300)})`,
           );
+          const progressText = describeToolCall(
+            block.name as string,
+            (block.input as Record<string, unknown>) ?? {},
+          );
+          if (progressText) {
+            sendProgressUpdate(
+              containerInput.chatJid,
+              containerInput.groupFolder,
+              progressText,
+            );
+          }
         }
       }
     } else if (message.type === 'assistant' && typeof content === 'string') {

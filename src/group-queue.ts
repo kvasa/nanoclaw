@@ -181,6 +181,26 @@ export class GroupQueue {
   }
 
   /**
+   * Update the thread timestamp file so the container uses the correct thread
+   * for progress updates when messages are piped into a running container.
+   */
+  updateThreadTs(groupJid: string, threadTs: string): void {
+    const state = this.getGroup(groupJid);
+    if (!state.groupFolder) return;
+
+    const ipcDir = path.join(DATA_DIR, 'ipc', state.groupFolder);
+    try {
+      fs.mkdirSync(ipcDir, { recursive: true });
+      const filePath = path.join(ipcDir, 'thread_ts');
+      const tempPath = `${filePath}.tmp`;
+      fs.writeFileSync(tempPath, threadTs);
+      fs.renameSync(tempPath, filePath);
+    } catch (err) {
+      logger.debug({ groupJid, err }, 'Failed to write thread_ts file');
+    }
+  }
+
+  /**
    * Signal the active container to wind down by writing a close sentinel.
    */
   closeStdin(groupJid: string): void {

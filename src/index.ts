@@ -76,6 +76,10 @@ let messageLoopRunning = false;
 const channels: Channel[] = [];
 const queue = new GroupQueue();
 
+// In-memory store for the latest user message threadTs per chatJid.
+// threadTs is ephemeral (not persisted in DB) and used for Slack thread replies.
+const latestThreadTs: Record<string, string> = {};
+
 function loadState(): void {
   lastTimestamp = getRouterState('last_timestamp') || '';
   const agentTs = getRouterState('last_agent_timestamp');
@@ -253,6 +257,17 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
     }, IDLE_TIMEOUT);
   };
 
+  // Use the in-memory threadTs for Slack thread replies (DB doesn't store threadTs).
+  // Progress updates (via IPC) are sent as thread replies; final response goes to main channel.
+  const triggerTs = latestThreadTs[chatJid];
+  // Clear after use so stale values don't leak to future invocations
+  delete latestThreadTs[chatJid];
+  // Write threadTs to file so the container can read it dynamically
+  // (env var is only set once at container start, but messages can be piped later)
+  if (triggerTs) {
+    queue.updateThreadTs(chatJid, triggerTs);
+  }
+
   await channel.setTyping?.(chatJid, true);
   const reactedMsgId = findLastUserMessageId(missedMessages);
   const reaction = new ReactionTracker(channel, chatJid, reactedMsgId);
@@ -260,30 +275,39 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
   let hadError = false;
   let outputSentToUser = false;
 
-  const output = await runAgent(group, prompt, chatJid, async (result) => {
-    // Streaming output callback — called for each agent result
-    if (result.result) {
-      const raw =
-        typeof result.result === 'string'
-          ? result.result
-          : JSON.stringify(result.result);
-      // Strip <internal>...</internal> blocks — agent uses these for internal reasoning
-      const text = raw.replace(/<internal>[\s\S]*?<\/internal>/g, '').trim();
-      logger.info({ group: group.name }, `Agent output: ${raw.slice(0, 200)}`);
-      if (text) {
-        await channel.sendMessage(chatJid, text);
-        outputSentToUser = true;
+  const output = await runAgent(
+    group,
+    prompt,
+    chatJid,
+    triggerTs,
+    async (result) => {
+      // Streaming output callback — called for each agent result
+      if (result.result) {
+        const raw =
+          typeof result.result === 'string'
+            ? result.result
+            : JSON.stringify(result.result);
+        // Strip <internal>...</internal> blocks — agent uses these for internal reasoning
+        const text = raw.replace(/<internal>[\s\S]*?<\/internal>/g, '').trim();
+        logger.info(
+          { group: group.name },
+          `Agent output: ${raw.slice(0, 200)}`,
+        );
+        if (text) {
+          await channel.sendMessage(chatJid, text);
+          outputSentToUser = true;
+        }
+        await reaction.finalize('white_check_mark');
+        // Only reset idle timer on actual results, not session-update markers (result: null)
+        resetIdleTimer();
       }
-      await reaction.finalize('white_check_mark');
-      // Only reset idle timer on actual results, not session-update markers (result: null)
-      resetIdleTimer();
-    }
 
-    if (result.status === 'error') {
-      hadError = true;
-      await reaction.finalize('warning');
-    }
-  });
+      if (result.status === 'error') {
+        hadError = true;
+        await reaction.finalize('warning');
+      }
+    },
+  );
 
   await channel.setTyping?.(chatJid, false);
   if (idleTimer) clearTimeout(idleTimer);
@@ -320,6 +344,7 @@ async function runAgent(
   group: RegisteredGroup,
   prompt: string,
   chatJid: string,
+  triggerMessageTs?: string,
   onOutput?: (output: ContainerOutput) => Promise<void>,
 ): Promise<'success' | 'error'> {
   const isMain = group.isMain === true;
@@ -391,6 +416,7 @@ async function runAgent(
         chatJid,
         isMain,
         enabledMcpServers: group.containerConfig?.enabledMcpServers,
+        triggerMessageTs,
       },
       (proc, containerName) =>
         queue.registerProcess(chatJid, proc, containerName, group.folder),
@@ -508,6 +534,12 @@ async function startMessageLoop(): Promise<void> {
           const formatted = formatMessages(messagesToSend, TIMEZONE);
 
           if (queue.sendMessage(chatJid, formatted)) {
+            // Update threadTs file so the container uses the new message's thread
+            const pipedThreadTs = latestThreadTs[chatJid];
+            if (pipedThreadTs) {
+              queue.updateThreadTs(chatJid, pipedThreadTs);
+              delete latestThreadTs[chatJid];
+            }
             logger.debug(
               { chatJid, count: messagesToSend.length },
               'Piped messages to active container',
@@ -600,6 +632,10 @@ async function main(): Promise<void> {
           return;
         }
       }
+      // Preserve threadTs in memory for Slack thread replies (not stored in DB)
+      if (msg.threadTs && !msg.is_bot_message) {
+        latestThreadTs[chatJid] = msg.threadTs;
+      }
       storeMessage(msg);
     },
     onChatMetadata: (
@@ -651,10 +687,10 @@ async function main(): Promise<void> {
     },
   });
   startIpcWatcher({
-    sendMessage: (jid, text) => {
+    sendMessage: (jid, text, threadTs) => {
       const channel = findChannel(channels, jid);
       if (!channel) throw new Error(`No channel for JID: ${jid}`);
-      return channel.sendMessage(jid, text);
+      return channel.sendMessage(jid, text, threadTs);
     },
     sendVoice: async (jid: string, audioBuffer: Buffer, caption?: string) => {
       const channel = findChannel(channels, jid);
