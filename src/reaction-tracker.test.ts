@@ -88,12 +88,18 @@ describe('ReactionTracker', () => {
     await tracker.finalize('checkmark');
 
     expect(channel.removeReaction).toHaveBeenCalledWith('jid1', 'msg1', 'eyes');
-    expect(channel.addReaction).toHaveBeenCalledWith('jid1', 'msg1', 'checkmark');
+    expect(channel.addReaction).toHaveBeenCalledWith(
+      'jid1',
+      'msg1',
+      'checkmark',
+    );
 
     // Advance timers — transition should NOT fire (it was cleared)
     const addReactionCalls = vi.mocked(channel.addReaction!).mock.calls.length;
     await vi.advanceTimersByTimeAsync(3000);
-    expect(vi.mocked(channel.addReaction!).mock.calls.length).toBe(addReactionCalls);
+    expect(vi.mocked(channel.addReaction!).mock.calls.length).toBe(
+      addReactionCalls,
+    );
   });
 
   it('finalize() after transition to gear: removes gear, adds final emoji', async () => {
@@ -110,7 +116,11 @@ describe('ReactionTracker', () => {
     await tracker.finalize('checkmark');
 
     expect(channel.removeReaction).toHaveBeenCalledWith('jid1', 'msg1', 'gear');
-    expect(channel.addReaction).toHaveBeenCalledWith('jid1', 'msg1', 'checkmark');
+    expect(channel.addReaction).toHaveBeenCalledWith(
+      'jid1',
+      'msg1',
+      'checkmark',
+    );
   });
 
   it('finalize() is idempotent - second call does nothing', async () => {
@@ -176,11 +186,16 @@ describe('ReactionTracker', () => {
     await tracker.finalize('checkmark');
 
     // Despite removeReaction failing, addReaction for final emoji should still be called
-    expect(channel.addReaction).toHaveBeenCalledWith('jid1', 'msg1', 'checkmark');
+    expect(channel.addReaction).toHaveBeenCalledWith(
+      'jid1',
+      'msg1',
+      'checkmark',
+    );
   });
 
   it('addReaction failure during finalize does not throw', async () => {
-    const addReaction = vi.fn()
+    const addReaction = vi
+      .fn()
       .mockResolvedValueOnce(undefined) // start() - eyes
       .mockRejectedValueOnce(new Error('add failed')); // finalize() - final emoji
 

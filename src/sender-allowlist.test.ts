@@ -123,7 +123,10 @@ describe('loadSenderAllowlist', () => {
     });
     loadSenderAllowlist(p);
     // Modify file and invalidate
-    fs.writeFileSync(p, JSON.stringify({ default: { allow: [], mode: 'drop' }, chats: {} }));
+    fs.writeFileSync(
+      p,
+      JSON.stringify({ default: { allow: [], mode: 'drop' }, chats: {} }),
+    );
     invalidateSenderAllowlistCache();
     const cfg = loadSenderAllowlist(p);
     expect(cfg.default.allow).toEqual([]);

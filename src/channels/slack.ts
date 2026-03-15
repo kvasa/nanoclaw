@@ -198,7 +198,11 @@ export class SlackChannel implements Channel {
       if (this.outgoingQueue.length >= MAX_OUTGOING_QUEUE_SIZE) {
         const dropped = this.outgoingQueue.shift();
         logger.warn(
-          { jid, droppedJid: dropped?.jid, queueSize: this.outgoingQueue.length },
+          {
+            jid,
+            droppedJid: dropped?.jid,
+            queueSize: this.outgoingQueue.length,
+          },
           'Slack outgoing queue full, dropping oldest message',
         );
       }
@@ -227,7 +231,11 @@ export class SlackChannel implements Channel {
       if (this.outgoingQueue.length >= MAX_OUTGOING_QUEUE_SIZE) {
         const dropped = this.outgoingQueue.shift();
         logger.warn(
-          { jid, droppedJid: dropped?.jid, queueSize: this.outgoingQueue.length },
+          {
+            jid,
+            droppedJid: dropped?.jid,
+            queueSize: this.outgoingQueue.length,
+          },
           'Slack outgoing queue full, dropping oldest message',
         );
       }

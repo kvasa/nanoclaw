@@ -58,10 +58,7 @@ function saveGroupCursor(
  * Used to demonstrate the bug in the "before fix" test case.
  */
 function saveAllCursors(lastAgentTimestamp: Record<string, string>): void {
-  setRouterState(
-    'last_agent_timestamp',
-    JSON.stringify(lastAgentTimestamp),
-  );
+  setRouterState('last_agent_timestamp', JSON.stringify(lastAgentTimestamp));
 }
 
 beforeEach(() => {

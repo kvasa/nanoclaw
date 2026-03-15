@@ -16,7 +16,9 @@ function writeAllowlist(data: unknown): void {
   fs.writeFileSync(allowlistPath, JSON.stringify(data));
 }
 
-function makeValidAllowlist(overrides: Partial<MountAllowlist> = {}): MountAllowlist {
+function makeValidAllowlist(
+  overrides: Partial<MountAllowlist> = {},
+): MountAllowlist {
   return {
     allowedRoots: overrides.allowedRoots ?? [
       { path: tmpDir, allowReadWrite: true, description: 'Test root' },
@@ -127,7 +129,9 @@ describe('loadMountAllowlist', () => {
   });
 
   it('merges DEFAULT_BLOCKED_PATTERNS with allowlist blockedPatterns', async () => {
-    writeAllowlist(makeValidAllowlist({ blockedPatterns: ['my-custom-pattern'] }));
+    writeAllowlist(
+      makeValidAllowlist({ blockedPatterns: ['my-custom-pattern'] }),
+    );
     const { loadMountAllowlist } = await importMountSecurity();
 
     const result = loadMountAllowlist();
@@ -146,7 +150,9 @@ describe('loadMountAllowlist', () => {
     const result = loadMountAllowlist();
     expect(result).not.toBeNull();
     // .ssh should appear exactly once (deduped via Set)
-    const sshCount = result!.blockedPatterns.filter((p: string) => p === '.ssh').length;
+    const sshCount = result!.blockedPatterns.filter(
+      (p: string) => p === '.ssh',
+    ).length;
     expect(sshCount).toBe(1);
     expect(result!.blockedPatterns).toContain('custom');
   });
@@ -172,7 +178,10 @@ describe('validateMount', () => {
   it('returns not-allowed when no allowlist configured', async () => {
     // allowlistPath doesn't exist
     const { validateMount } = await importMountSecurity();
-    const result = validateMount({ hostPath: '/some/path', containerPath: 'data' }, true);
+    const result = validateMount(
+      { hostPath: '/some/path', containerPath: 'data' },
+      true,
+    );
     expect(result.allowed).toBe(false);
     expect(result.reason).toContain('No mount allowlist configured');
   });
@@ -352,7 +361,11 @@ describe('validateMount', () => {
     writeAllowlist(
       makeValidAllowlist({
         allowedRoots: [
-          { path: tmpDir, allowReadWrite: false, description: 'Read-only root' },
+          {
+            path: tmpDir,
+            allowReadWrite: false,
+            description: 'Read-only root',
+          },
         ],
       }),
     );
