@@ -454,7 +454,7 @@ async function runQuery(
     },
   };
 
-  const optionalMcps: Record<string, { command: string; args: string[] }> = {
+  const optionalMcps: Record<string, { command: string; args: string[]; env?: Record<string, string> }> = {
     gmail: {
       command: 'npx',
       args: ['-y', '@gongrzhe/server-gmail-autoauth-mcp'],
@@ -469,6 +469,15 @@ async function runQuery(
         '--header',
         `rhl-pass: ${process.env.RHL_PASS || ''}`,
       ],
+    },
+    calendar: {
+      command: 'npx',
+      args: ['-y', 'caldav-mcp'],
+      env: {
+        CALDAV_BASE_URL: process.env.CALDAV_BASE_URL || 'https://caldav.icloud.com/',
+        CALDAV_USERNAME: process.env.APPLE_ID || '',
+        CALDAV_PASSWORD: process.env.APPLE_APP_PASSWORD || '',
+      },
     },
   };
 

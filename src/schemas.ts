@@ -35,7 +35,9 @@ export const IpcSendVoiceSchema = z.object({
 
 export const IpcSendEmailSchema = z.object({
   type: z.literal('send_email'),
-  threadJid: z.string().regex(/^gmail:[a-f0-9]+$/i, 'Invalid Gmail thread JID format'),
+  threadJid: z
+    .string()
+    .regex(/^gmail:[a-f0-9]+$/i, 'Invalid Gmail thread JID format'),
   text: z.string(),
 });
 
@@ -46,12 +48,20 @@ export const IpcComposeEmailSchema = z.object({
   body: z.string(),
 });
 
+export const IpcReadEmailsSchema = z.object({
+  type: z.literal('read_emails'),
+  query: z.string().optional(),
+  maxResults: z.number().int().min(1).max(50).optional(),
+  requestId: z.string(),
+});
+
 export const IpcFileMessageSchema = z.discriminatedUnion('type', [
   IpcMessageSchema,
   IpcSendFileSchema,
   IpcSendVoiceSchema,
   IpcSendEmailSchema,
   IpcComposeEmailSchema,
+  IpcReadEmailsSchema,
 ]);
 
 // --- IPC Task Schemas (processTaskIpc) ---

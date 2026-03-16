@@ -21,6 +21,7 @@ import { SlackChannel } from './channels/slack.js';
 import {
   ContainerOutput,
   runContainerAgent,
+  writeEmailsSnapshot,
   writeGroupsSnapshot,
   writeTasksSnapshot,
 } from './container-runner.js';
@@ -74,6 +75,7 @@ let sessions: Record<string, string> = {};
 let registeredGroups: Record<string, RegisteredGroup> = {};
 let lastAgentTimestamp: Record<string, string> = {};
 let messageLoopRunning = false;
+let gmailChannel: GmailChannel | undefined;
 
 const channels: Channel[] = [];
 const queue = new GroupQueue();
@@ -308,6 +310,11 @@ async function runAgent(
     availableGroups,
     new Set(Object.keys(registeredGroups)),
   );
+
+  // Write email snapshot for main group so agent can read recent emails
+  if (isMain && gmailChannel) {
+    writeEmailsSnapshot(group.folder, gmailChannel.getRecentEmails());
+  }
 
   // Wrap onOutput to track session ID from streamed results
   // Also intercept corrupted-session errors (e.g. expired image data)
@@ -599,6 +606,7 @@ async function main(): Promise<void> {
   const gmailCh = channels.find((c) => c.name === 'gmail') as
     | GmailChannel
     | undefined;
+  gmailChannel = gmailCh;
   if (slackCh && gmailCh) {
     gmailCh.approvalGate = async (opts) => {
       const mainEntry = Object.entries(registeredGroups).find(
@@ -646,10 +654,15 @@ async function main(): Promise<void> {
       return channel.sendMessage(jid, text);
     },
     sendEmailReply: gmailCh
-      ? (threadJid, text): Promise<boolean> => gmailCh.replyEmail(threadJid, text)
+      ? (threadJid, text): Promise<boolean> =>
+          gmailCh.replyEmail(threadJid, text)
       : undefined,
     composeEmail: gmailCh
-      ? (to, subject, body): Promise<boolean> => gmailCh.composeEmail(to, subject, body)
+      ? (to, subject, body): Promise<boolean> =>
+          gmailCh.composeEmail(to, subject, body)
+      : undefined,
+    readEmails: gmailCh
+      ? (query, maxResults) => gmailCh.readEmails(query, maxResults)
       : undefined,
     sendVoice: async (jid: string, audioBuffer: Buffer, caption?: string) => {
       const channel = findChannel(channels, jid);

@@ -12,6 +12,7 @@ import {
   IpcCancelTaskSchema,
   IpcFileMessageSchema,
   IpcPauseTaskSchema,
+  IpcReadEmailsSchema,
   IpcRefreshGroupsSchema,
   IpcRegisterGroupSchema,
   IpcResumeTaskSchema,
@@ -29,6 +30,10 @@ export interface IpcDeps {
     subject: string,
     body: string,
   ) => Promise<boolean>;
+  readEmails?: (
+    query: string,
+    maxResults: number,
+  ) => Promise<Array<{ threadJid: string; subject: string; from: string; snippet: string; date: string; body: string }>>;
   sendFile: (
     jid: string,
     filePath: string,
@@ -169,6 +174,47 @@ export function startIpcWatcher(deps: IpcDeps): void {
                         : `❌ Email zamítnut (nebyl odeslán)`;
                       await deps.sendMessage(mainJid, feedback);
                     }
+                  }
+                } else if (data.type === 'read_emails') {
+                  const parsed = IpcReadEmailsSchema.safeParse(raw);
+                  if (!parsed.success) {
+                    logger.warn(
+                      { file, sourceGroup, errors: parsed.error.issues },
+                      'Invalid read_emails schema',
+                    );
+                  } else if (!isMain) {
+                    logger.warn(
+                      { sourceGroup },
+                      'Unauthorized read_emails attempt blocked',
+                    );
+                  } else if (!deps.readEmails) {
+                    logger.warn(
+                      'read_emails requested but Gmail channel not available',
+                    );
+                  } else {
+                    const { query, maxResults, requestId } = parsed.data;
+                    const emails = await deps.readEmails(
+                      query ?? 'is:unread',
+                      maxResults ?? 10,
+                    );
+                    const responseDir = path.join(
+                      ipcBaseDir,
+                      sourceGroup,
+                      'input',
+                    );
+                    fs.mkdirSync(responseDir, { recursive: true });
+                    const responseFile = path.join(
+                      responseDir,
+                      `read_emails_${requestId}.json`,
+                    );
+                    fs.writeFileSync(
+                      responseFile,
+                      JSON.stringify({ requestId, emails }),
+                    );
+                    logger.info(
+                      { count: emails.length, sourceGroup },
+                      'IPC read_emails resolved',
+                    );
                   }
                 } else {
                   const targetGroup = registeredGroups[data.chatJid];

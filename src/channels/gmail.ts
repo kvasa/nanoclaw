@@ -17,9 +17,11 @@ import {
   GMAIL_RATE_LIMIT_GLOBAL,
   GMAIL_RATE_LIMIT_OUTGOING,
   GMAIL_RATE_LIMIT_PER_SENDER,
+  GMAIL_RATE_LIMIT_READ_EMAILS,
   GMAIL_RATE_LIMIT_WINDOW_MS,
 } from '../config.js';
 import {
+  CachedEmail,
   Channel,
   OnChatMetadata,
   OnInboundMessage,
@@ -57,8 +59,11 @@ export class GmailChannel implements Channel {
   private senderTimestamps = new Map<string, number[]>();
   private globalTimestamps: number[] = [];
   private outgoingTimestamps: number[] = [];
+  private readEmailsTimestamps: number[] = [];
   private consecutiveErrors = 0;
   private userEmail = '';
+  private recentEmails: CachedEmail[] = [];
+  private static readonly RECENT_EMAILS_MAX = 20;
 
   /** If set, called before every outgoing email. Return false to abort the send. */
   approvalGate?: (opts: {
@@ -263,6 +268,93 @@ export class GmailChannel implements Channel {
     }
   }
 
+  getRecentEmails(): CachedEmail[] {
+    return [...this.recentEmails];
+  }
+
+  async readEmails(
+    query: string = 'is:unread',
+    maxResults: number = 10,
+  ): Promise<Array<{ threadJid: string; subject: string; from: string; snippet: string; date: string; body: string }>> {
+    if (!this.gmail) return [];
+
+    const now = Date.now();
+    this.readEmailsTimestamps = this.readEmailsTimestamps.filter(
+      (t) => t > now - GMAIL_RATE_LIMIT_WINDOW_MS,
+    );
+    if (this.readEmailsTimestamps.length >= GMAIL_RATE_LIMIT_READ_EMAILS) {
+      logger.warn(
+        { count: this.readEmailsTimestamps.length, limit: GMAIL_RATE_LIMIT_READ_EMAILS },
+        'Gmail read_emails rate limit exceeded',
+      );
+      return [];
+    }
+    this.readEmailsTimestamps.push(now);
+
+    const res = await this.gmail.users.messages.list({
+      userId: 'me',
+      q: query,
+      maxResults,
+    });
+    const messages = res.data.messages || [];
+
+    const DELIMITER_END = '--- END EXTERNAL EMAIL ---';
+    const escapeDelimiter = (s: string) =>
+      s.replaceAll(DELIMITER_END, '--- [escaped delimiter] ---');
+    const BODY_MAX_CHARS = 16_000;
+
+    const result = [];
+    for (const stub of messages.slice(0, maxResults)) {
+      if (!stub.id) continue;
+      let msg;
+      try {
+        msg = await this.gmail.users.messages.get({
+          userId: 'me',
+          id: stub.id,
+          format: 'full',
+        });
+      } catch (err) {
+        logger.warn({ messageId: stub.id, err }, 'readEmails: failed to fetch message, skipping');
+        continue;
+      }
+
+      const headers = msg.data.payload?.headers || [];
+      const getHeader = (name: string) =>
+        headers.find((h) => h.name?.toLowerCase() === name.toLowerCase())?.value || '';
+
+      const extractBody = (payload: any, depth = 0): string => {
+        if (!payload || depth > 10) return '';
+        if (payload.mimeType === 'text/plain' && payload.body?.data) {
+          return Buffer.from(payload.body.data, 'base64').toString('utf-8');
+        }
+        if (payload.parts) {
+          for (const part of payload.parts) {
+            const text = extractBody(part, depth + 1);
+            if (text) return text;
+          }
+        }
+        return msg.data.snippet || '';
+      };
+
+      const rawBody = extractBody(msg.data.payload);
+      const body =
+        rawBody.length > BODY_MAX_CHARS
+          ? rawBody.slice(0, BODY_MAX_CHARS) +
+            `\n[... truncated — ${rawBody.length - BODY_MAX_CHARS} chars omitted ...]`
+          : rawBody;
+
+      result.push({
+        threadJid: `gmail:${msg.data.threadId}`,
+        subject: escapeDelimiter(getHeader('Subject')),
+        from: escapeDelimiter(getHeader('From')),
+        snippet: escapeDelimiter(msg.data.snippet || ''),
+        date: new Date(parseInt(msg.data.internalDate || '0', 10)).toISOString(),
+        body: escapeDelimiter(body),
+      });
+    }
+    return result;
+  }
+
   isConnected(): boolean {
     return this.gmail !== null;
   }
@@ -397,12 +489,15 @@ export class GmailChannel implements Channel {
 
     // Extract sender name and email
     const senderMatch = from.match(/^(.+?)\s*<(.+?)>$/);
-    const senderName = senderMatch ? senderMatch[1].replace(/"/g, '') : from;
+    const senderName = this.sanitize(senderMatch ? senderMatch[1].replace(/"/g, '') : from);
     const senderEmail = senderMatch ? senderMatch[2] : from;
 
     // Reject malformed or multi-address From values to prevent header injection
     if (!/^[^@\s,]+@[^@\s,]+$/.test(senderEmail)) {
-      logger.warn({ from, messageId }, 'Gmail email rejected: malformed From address');
+      logger.warn(
+        { from, messageId },
+        'Gmail email rejected: malformed From address',
+      );
       return;
     }
 
@@ -561,6 +656,20 @@ export class GmailChannel implements Channel {
       timestamp,
       is_from_me: false,
     });
+
+    // Cache for read_emails IPC tool
+    const BODY_SNIPPET_MAX = 2000;
+    this.recentEmails.push({
+      threadJid: chatJid,
+      from: senderEmail,
+      fromName: senderName,
+      subject,
+      body: body.length > BODY_SNIPPET_MAX ? body.slice(0, BODY_SNIPPET_MAX) + '…' : body,
+      timestamp,
+    });
+    if (this.recentEmails.length > GmailChannel.RECENT_EMAILS_MAX) {
+      this.recentEmails.shift();
+    }
 
     // Mark as read
     try {
