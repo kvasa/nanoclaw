@@ -110,6 +110,15 @@ export interface Channel {
   syncGroups?(force: boolean): Promise<void>;
 }
 
+export interface CachedEmail {
+  threadJid: string; // "gmail:xxx"
+  from: string; // email address
+  fromName: string; // display name
+  subject: string;
+  body: string; // truncated to 2000 chars
+  timestamp: string; // ISO string
+}
+
 // Callback type that channels use to deliver inbound messages
 export type OnInboundMessage = (chatJid: string, message: NewMessage) => void;
 

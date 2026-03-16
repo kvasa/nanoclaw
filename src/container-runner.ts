@@ -31,7 +31,7 @@ import {
 import { detectAuthMode } from './credential-proxy.js';
 import { validateAdditionalMounts } from './mount-security.js';
 import { ContainerOutputSchema } from './schemas.js';
-import { RegisteredGroup } from './types.js';
+import { CachedEmail, RegisteredGroup } from './types.js';
 
 // Sentinel markers for robust output parsing (must match agent-runner)
 const OUTPUT_START_MARKER = '---NANOCLAW_OUTPUT_START---';
@@ -327,6 +327,18 @@ function buildContainerArgs(
     if (fs.existsSync(garminTokenDir)) {
       args.push('-v', `${garminTokenDir}:/home/node/.garmin-mcp:rw`);
     }
+  }
+
+  // Apple Calendar MCP credentials (only when calendar is enabled)
+  if (enabledMcpServers?.includes('calendar')) {
+    const appleId = process.env.APPLE_ID || agentConfig.APPLE_ID;
+    const applePass =
+      process.env.APPLE_APP_PASSWORD || agentConfig.APPLE_APP_PASSWORD;
+    if (appleId) args.push('-e', `APPLE_ID=${appleId}`);
+    if (applePass) args.push('-e', `APPLE_APP_PASSWORD=${applePass}`);
+    const caldavUrl =
+      process.env.CALDAV_BASE_URL || agentConfig.CALDAV_BASE_URL;
+    if (caldavUrl) args.push('-e', `CALDAV_BASE_URL=${caldavUrl}`);
   }
 
   // Run as host user so bind-mounted files are accessible.
@@ -804,6 +816,16 @@ export function writeTasksSnapshot(
 
   const tasksFile = path.join(groupIpcDir, 'current_tasks.json');
   fs.writeFileSync(tasksFile, JSON.stringify(filteredTasks, null, 2));
+}
+
+export function writeEmailsSnapshot(
+  groupFolder: string,
+  emails: CachedEmail[],
+): void {
+  const groupIpcDir = resolveGroupIpcPath(groupFolder);
+  fs.mkdirSync(groupIpcDir, { recursive: true });
+  const emailsFile = path.join(groupIpcDir, 'emails.json');
+  fs.writeFileSync(emailsFile, JSON.stringify(emails, null, 2));
 }
 
 export interface AvailableGroup {

@@ -127,6 +127,7 @@ export const GMAIL_ALLOWED_DOMAINS: Set<string> = new Set(
 // GMAIL_RATE_LIMIT_PER_SENDER: max emails from one sender per window (default 5)
 // GMAIL_RATE_LIMIT_GLOBAL: max emails total per window (default 20)
 // GMAIL_RATE_LIMIT_OUTGOING: max outgoing emails (sent+rejected) per window (default 10)
+// GMAIL_RATE_LIMIT_READ_EMAILS: max read_emails IPC calls per window (default 20)
 // GMAIL_RATE_LIMIT_WINDOW_MS: window in ms (default 3600000 = 1 hour)
 export const GMAIL_RATE_LIMIT_PER_SENDER = parseInt(
   process.env.GMAIL_RATE_LIMIT_PER_SENDER ||
@@ -144,6 +145,12 @@ export const GMAIL_RATE_LIMIT_OUTGOING = parseInt(
   process.env.GMAIL_RATE_LIMIT_OUTGOING ||
     envConfig.GMAIL_RATE_LIMIT_OUTGOING ||
     '10',
+  10,
+);
+export const GMAIL_RATE_LIMIT_READ_EMAILS = parseInt(
+  process.env.GMAIL_RATE_LIMIT_READ_EMAILS ||
+    envConfig.GMAIL_RATE_LIMIT_READ_EMAILS ||
+    '20',
   10,
 );
 export const GMAIL_RATE_LIMIT_WINDOW_MS = parseInt(
