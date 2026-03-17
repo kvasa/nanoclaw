@@ -309,7 +309,7 @@ function buildContainerArgs(
     'APPLE_ID',
     'APPLE_APP_PASSWORD',
     'CALDAV_BASE_URL',
-  ]); 
+  ]);
   const claudeModel = process.env.CLAUDE_MODEL || agentConfig.CLAUDE_MODEL;
   const llmLogDetail = process.env.LLM_LOG_DETAIL || agentConfig.LLM_LOG_DETAIL;
   if (claudeModel) {
@@ -330,10 +330,12 @@ function buildContainerArgs(
   // Apple Calendar MCP credentials (only when calendar is enabled)
   if (enabledMcpServers?.includes('calendar')) {
     const appleId = process.env.APPLE_ID || agentConfig.APPLE_ID;
-    const applePass = process.env.APPLE_APP_PASSWORD || agentConfig.APPLE_APP_PASSWORD;
+    const applePass =
+      process.env.APPLE_APP_PASSWORD || agentConfig.APPLE_APP_PASSWORD;
     if (appleId) args.push('-e', `APPLE_ID=${appleId}`);
     if (applePass) args.push('-e', `APPLE_APP_PASSWORD=${applePass}`);
-    const caldavUrl = process.env.CALDAV_BASE_URL || agentConfig.CALDAV_BASE_URL;
+    const caldavUrl =
+      process.env.CALDAV_BASE_URL || agentConfig.CALDAV_BASE_URL;
     if (caldavUrl) args.push('-e', `CALDAV_BASE_URL=${caldavUrl}`);
   }
 

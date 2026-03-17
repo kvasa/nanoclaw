@@ -33,7 +33,16 @@ export interface IpcDeps {
   readEmails?: (
     query: string,
     maxResults: number,
-  ) => Promise<Array<{ threadJid: string; subject: string; from: string; snippet: string; date: string; body: string }>>;
+  ) => Promise<
+    Array<{
+      threadJid: string;
+      subject: string;
+      from: string;
+      snippet: string;
+      date: string;
+      body: string;
+    }>
+  >;
   sendFile: (
     jid: string,
     filePath: string,
@@ -207,6 +216,13 @@ export function startIpcWatcher(deps: IpcDeps): void {
                       responseDir,
                       `read_emails_${requestId}.json`,
                     );
+                    if (!responseFile.startsWith(responseDir + path.sep)) {
+                      logger.warn(
+                        { requestId, sourceGroup },
+                        'read_emails: requestId path traversal attempt blocked',
+                      );
+                      break;
+                    }
                     fs.writeFileSync(
                       responseFile,
                       JSON.stringify({ requestId, emails }),

@@ -52,7 +52,7 @@ export const IpcReadEmailsSchema = z.object({
   type: z.literal('read_emails'),
   query: z.string().optional(),
   maxResults: z.number().int().min(1).max(50).optional(),
-  requestId: z.string(),
+  requestId: z.string().max(128).regex(/^[a-zA-Z0-9_-]+$/),
 });
 
 export const IpcFileMessageSchema = z.discriminatedUnion('type', [

@@ -275,7 +275,16 @@ export class GmailChannel implements Channel {
   async readEmails(
     query: string = 'is:unread',
     maxResults: number = 10,
-  ): Promise<Array<{ threadJid: string; subject: string; from: string; snippet: string; date: string; body: string }>> {
+  ): Promise<
+    Array<{
+      threadJid: string;
+      subject: string;
+      from: string;
+      snippet: string;
+      date: string;
+      body: string;
+    }>
+  > {
     if (!this.gmail) return [];
 
     const now = Date.now();
@@ -284,7 +293,10 @@ export class GmailChannel implements Channel {
     );
     if (this.readEmailsTimestamps.length >= GMAIL_RATE_LIMIT_READ_EMAILS) {
       logger.warn(
-        { count: this.readEmailsTimestamps.length, limit: GMAIL_RATE_LIMIT_READ_EMAILS },
+        {
+          count: this.readEmailsTimestamps.length,
+          limit: GMAIL_RATE_LIMIT_READ_EMAILS,
+        },
         'Gmail read_emails rate limit exceeded',
       );
       return [];
@@ -314,13 +326,17 @@ export class GmailChannel implements Channel {
           format: 'full',
         });
       } catch (err) {
-        logger.warn({ messageId: stub.id, err }, 'readEmails: failed to fetch message, skipping');
+        logger.warn(
+          { messageId: stub.id, err },
+          'readEmails: failed to fetch message, skipping',
+        );
         continue;
       }
 
       const headers = msg.data.payload?.headers || [];
       const getHeader = (name: string) =>
-        headers.find((h) => h.name?.toLowerCase() === name.toLowerCase())?.value || '';
+        headers.find((h) => h.name?.toLowerCase() === name.toLowerCase())
+          ?.value || '';
 
       const extractBody = (payload: any, depth = 0): string => {
         if (!payload || depth > 10) return '';
@@ -348,7 +364,9 @@ export class GmailChannel implements Channel {
         subject: escapeDelimiter(getHeader('Subject')),
         from: escapeDelimiter(getHeader('From')),
         snippet: escapeDelimiter(msg.data.snippet || ''),
-        date: new Date(parseInt(msg.data.internalDate || '0', 10)).toISOString(),
+        date: new Date(
+          parseInt(msg.data.internalDate || '0', 10),
+        ).toISOString(),
         body: escapeDelimiter(body),
       });
     }
@@ -489,7 +507,9 @@ export class GmailChannel implements Channel {
 
     // Extract sender name and email
     const senderMatch = from.match(/^(.+?)\s*<(.+?)>$/);
-    const senderName = this.sanitize(senderMatch ? senderMatch[1].replace(/"/g, '') : from);
+    const senderName = this.sanitize(
+      senderMatch ? senderMatch[1].replace(/"/g, '') : from,
+    );
     const senderEmail = senderMatch ? senderMatch[2] : from;
 
     // Reject malformed or multi-address From values to prevent header injection
@@ -664,7 +684,10 @@ export class GmailChannel implements Channel {
       from: senderEmail,
       fromName: senderName,
       subject,
-      body: body.length > BODY_SNIPPET_MAX ? body.slice(0, BODY_SNIPPET_MAX) + '…' : body,
+      body:
+        body.length > BODY_SNIPPET_MAX
+          ? body.slice(0, BODY_SNIPPET_MAX) + '…'
+          : body,
       timestamp,
     });
     if (this.recentEmails.length > GmailChannel.RECENT_EMAILS_MAX) {
