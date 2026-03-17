@@ -150,39 +150,64 @@ export function startApiServer(config: ApiServerConfig): Promise<Server> {
           'API query received',
         );
 
-        const output = await runContainerAgent(
-          group,
-          {
-            prompt,
-            sessionId,
-            groupFolder: group.folder,
-            chatJid,
-            isMain: false,
-          },
-          (proc, containerName) => {
-            // Kill the container process when client disconnects
-            req.on('close', () => {
-              logger.debug(
-                { containerName },
-                'API client disconnected, killing container',
-              );
-              proc.kill('SIGTERM');
-            });
-          },
-          async (result: ContainerOutput) => {
-            if (result.newSessionId) {
-              config.setSession(group.folder, result.newSessionId);
-            }
-            if (result.result) {
-              const text = result.result
-                .replace(/<internal>[\s\S]*?<\/internal>/g, '')
-                .trim();
-              if (text) {
-                sendSSE(res, { type: 'chunk', text });
+        // Wrap runContainerAgent in a promise that resolves on first output,
+        // so the HTTP response completes without waiting for the container to exit.
+        // The container stays alive for reuse (idle timeout handles cleanup).
+        await new Promise<void>((resolveRequest, rejectRequest) => {
+          let responded = false;
+
+          runContainerAgent(
+            group,
+            {
+              prompt,
+              sessionId,
+              groupFolder: group.folder,
+              chatJid,
+              isMain: false,
+            },
+            (proc, containerName) => {
+              // Kill the container process when client disconnects
+              req.on('close', () => {
+                logger.debug(
+                  { containerName },
+                  'API client disconnected, killing container',
+                );
+                proc.kill('SIGTERM');
+              });
+            },
+            async (result: ContainerOutput) => {
+              if (result.newSessionId) {
+                config.setSession(group.folder, result.newSessionId);
               }
-            }
-          },
-        );
+              if (result.result) {
+                const text = result.result
+                  .replace(/<internal>[\s\S]*?<\/internal>/g, '')
+                  .trim();
+                if (text) {
+                  sendSSE(res, { type: 'chunk', text });
+                }
+              }
+              // Resolve HTTP response after first output with a result
+              if (!responded && result.result) {
+                responded = true;
+                resolveRequest();
+              }
+            },
+          )
+            .then(() => {
+              // Container exited — resolve if we haven't already
+              if (!responded) {
+                responded = true;
+                resolveRequest();
+              }
+            })
+            .catch((err) => {
+              if (!responded) {
+                responded = true;
+                rejectRequest(err);
+              }
+            });
+        });
 
         sendSSE(res, { type: 'done' });
         res.end();
