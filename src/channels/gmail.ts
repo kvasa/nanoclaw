@@ -54,6 +54,8 @@ export class GmailChannel implements Channel {
   private threadMetaInsertOrder: string[] = [];
   private static readonly THREAD_META_MAX = 2500;
   private static readonly SENDER_TIMESTAMPS_MAX = 1000;
+  private static readonly BODY_MAX_CHARS = 16_000;
+  private static readonly DELIMITER_END = '--- END EXTERNAL EMAIL ---';
 
   // Rate limiting: timestamps of processed emails per sender and globally
   private senderTimestamps = new Map<string, number[]>();
@@ -310,13 +312,8 @@ export class GmailChannel implements Channel {
     });
     const messages = res.data.messages || [];
 
-    const DELIMITER_END = '--- END EXTERNAL EMAIL ---';
-    const escapeDelimiter = (s: string) =>
-      s.replaceAll(DELIMITER_END, '--- [escaped delimiter] ---');
-    const BODY_MAX_CHARS = 16_000;
-
     const result = [];
-    for (const stub of messages.slice(0, maxResults)) {
+    for (const stub of messages) {
       if (!stub.id) continue;
       let msg;
       try {
@@ -338,36 +335,19 @@ export class GmailChannel implements Channel {
         headers.find((h) => h.name?.toLowerCase() === name.toLowerCase())
           ?.value || '';
 
-      const extractBody = (payload: any, depth = 0): string => {
-        if (!payload || depth > 10) return '';
-        if (payload.mimeType === 'text/plain' && payload.body?.data) {
-          return Buffer.from(payload.body.data, 'base64').toString('utf-8');
-        }
-        if (payload.parts) {
-          for (const part of payload.parts) {
-            const text = extractBody(part, depth + 1);
-            if (text) return text;
-          }
-        }
-        return msg.data.snippet || '';
-      };
-
-      const rawBody = extractBody(msg.data.payload);
-      const body =
-        rawBody.length > BODY_MAX_CHARS
-          ? rawBody.slice(0, BODY_MAX_CHARS) +
-            `\n[... truncated — ${rawBody.length - BODY_MAX_CHARS} chars omitted ...]`
-          : rawBody;
+      const rawBody =
+        this.extractTextBody(msg.data.payload) || msg.data.snippet || '';
+      const body = this.truncateBody(rawBody);
 
       result.push({
         threadJid: `gmail:${msg.data.threadId}`,
-        subject: escapeDelimiter(getHeader('Subject')),
-        from: escapeDelimiter(getHeader('From')),
-        snippet: escapeDelimiter(msg.data.snippet || ''),
+        subject: this.escapeDelimiter(getHeader('Subject')),
+        from: this.escapeDelimiter(getHeader('From')),
+        snippet: this.escapeDelimiter(msg.data.snippet || ''),
         date: new Date(
           parseInt(msg.data.internalDate || '0', 10),
         ).toISOString(),
-        body: escapeDelimiter(body),
+        body: this.escapeDelimiter(body),
       });
     }
     return result;
@@ -605,13 +585,7 @@ export class GmailChannel implements Channel {
       return;
     }
 
-    // Truncate oversized bodies to prevent context flooding
-    const BODY_MAX_CHARS = 16_000;
-    const body =
-      rawBody.length > BODY_MAX_CHARS
-        ? rawBody.slice(0, BODY_MAX_CHARS) +
-          `\n[... truncated — ${rawBody.length - BODY_MAX_CHARS} chars omitted ...]`
-        : rawBody;
+    const body = this.truncateBody(rawBody);
 
     const chatJid = `gmail:${threadId}`;
 
@@ -647,14 +621,10 @@ export class GmailChannel implements Channel {
 
     // Escape the delimiter in all untrusted fields to prevent prompt injection
     // via delimiter spoofing (body, subject, and sender name).
-    const DELIMITER_END = '--- END EXTERNAL EMAIL ---';
-    const escapeDelimiter = (s: string) =>
-      s.replaceAll(DELIMITER_END, '--- [escaped delimiter] ---');
-
-    const safeBody = escapeDelimiter(body);
-    const safeSubject = escapeDelimiter(subject);
-    const safeSenderName = escapeDelimiter(senderName);
-    const safeSenderEmail = escapeDelimiter(senderEmail);
+    const safeBody = this.escapeDelimiter(body);
+    const safeSubject = this.escapeDelimiter(subject);
+    const safeSenderName = this.escapeDelimiter(senderName);
+    const safeSenderEmail = this.escapeDelimiter(senderEmail);
 
     const mainJid = mainEntry[0];
     const content = [
@@ -664,7 +634,7 @@ export class GmailChannel implements Channel {
       `Subject: ${safeSubject}`,
       ``,
       safeBody,
-      DELIMITER_END,
+      GmailChannel.DELIMITER_END,
     ].join('\n');
 
     this.opts.onMessage(mainJid, {
@@ -708,6 +678,18 @@ export class GmailChannel implements Channel {
     logger.info(
       { mainJid, from: senderName, subject },
       'Gmail email delivered to main group',
+    );
+  }
+
+  private escapeDelimiter(s: string): string {
+    return s.replaceAll(GmailChannel.DELIMITER_END, '--- [escaped delimiter] ---');
+  }
+
+  private truncateBody(raw: string): string {
+    if (raw.length <= GmailChannel.BODY_MAX_CHARS) return raw;
+    return (
+      raw.slice(0, GmailChannel.BODY_MAX_CHARS) +
+      `\n[... truncated — ${raw.length - GmailChannel.BODY_MAX_CHARS} chars omitted ...]`
     );
   }
 
