@@ -29,7 +29,6 @@ export interface ApiServerConfig {
 interface QueryRequest {
   text: string;
   groupId?: string;
-  history?: Array<{ role: 'user' | 'assistant'; content: string }>;
 }
 
 /**
@@ -72,21 +71,8 @@ function sendSSE(res: ServerResponse, data: object): void {
   res.write(`data: ${JSON.stringify(data)}\n\n`);
 }
 
-function formatPrompt(
-  text: string,
-  history?: Array<{ role: 'user' | 'assistant'; content: string }>,
-): string {
-  let prompt = '';
-  if (history && history.length > 0) {
-    prompt += '<conversation_history>\n';
-    for (const entry of history) {
-      const role = entry.role === 'user' ? 'User' : 'Assistant';
-      prompt += `<message role="${role}">${entry.content}</message>\n`;
-    }
-    prompt += '</conversation_history>\n\n';
-  }
-  prompt += `<message sender="User" time="${new Date().toISOString()}">${text}</message>`;
-  return prompt;
+function formatPrompt(text: string): string {
+  return `<message sender="User" time="${new Date().toISOString()}">${text}</message>`;
 }
 
 /**
@@ -186,7 +172,7 @@ export function startApiServer(config: ApiServerConfig): Promise<Server> {
           'Access-Control-Allow-Origin': '*',
         });
 
-        const prompt = formatPrompt(parsed.text, parsed.history);
+        const prompt = formatPrompt(parsed.text);
 
         logger.info(
           { group: group.name, textLength: parsed.text.length },
