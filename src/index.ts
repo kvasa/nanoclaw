@@ -672,6 +672,7 @@ async function main(): Promise<void> {
   // Create and connect all registered channels.
   // Each channel self-registers via the barrel import above.
   // Factories return null when credentials are missing, so unconfigured channels are skipped.
+  const failedChannels: { name: string; error: string }[] = [];
   for (const channelName of getRegisteredChannelNames()) {
     const factory = getChannelFactory(channelName)!;
     const channel = factory(channelOpts);
@@ -682,12 +683,39 @@ async function main(): Promise<void> {
       );
       continue;
     }
-    channels.push(channel);
-    await channel.connect();
+    try {
+      await channel.connect();
+      channels.push(channel);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      logger.error(
+        { channel: channelName, err },
+        'Channel failed to connect — skipping',
+      );
+      failedChannels.push({ name: channelName, error: msg });
+    }
   }
   if (channels.length === 0) {
     logger.fatal('No channels connected');
     process.exit(1);
+  }
+
+  // Notify main channel about any channels that failed to connect
+  if (failedChannels.length > 0) {
+    const mainEntry = Object.entries(registeredGroups).find(
+      ([, g]) => g.isMain,
+    );
+    if (mainEntry) {
+      const [mainJid] = mainEntry;
+      const mainChannel = findChannel(channels, mainJid);
+      if (mainChannel) {
+        const lines = failedChannels.map((f) => `• *${f.name}*: ${f.error}`);
+        await mainChannel.sendMessage(
+          mainJid,
+          `⚠️ Failed to connect channel(s):\n${lines.join('\n')}\n\nRe-authenticate with the relevant /add-<channel> skill.`,
+        );
+      }
+    }
   }
 
   // Start subsystems (independently of connection handler)

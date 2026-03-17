@@ -9,6 +9,9 @@ const envConfig = readEnvFile([
   'ASSISTANT_NAME',
   'ASSISTANT_HAS_OWN_NUMBER',
   'LOG_LEVEL',
+  'API_TOKEN',
+  'API_PORT',
+  'API_GROUP_ID',
 ]);
 
 export const ASSISTANT_NAME =
@@ -57,9 +60,13 @@ export const CREDENTIAL_PROXY_PORT = parseInt(
 
 // API server for direct client access (pi-assistant, etc.)
 // Only starts when API_TOKEN is set.
-export const API_PORT = parseInt(process.env.API_PORT || '3002', 10);
-export const API_TOKEN = process.env.API_TOKEN || '';
-export const API_GROUP_ID = process.env.API_GROUP_ID || 'assistant';
+export const API_PORT = parseInt(
+  process.env.API_PORT || envConfig.API_PORT || '3002',
+  10,
+);
+export const API_TOKEN = process.env.API_TOKEN || envConfig.API_TOKEN || '';
+export const API_GROUP_ID =
+  process.env.API_GROUP_ID || envConfig.API_GROUP_ID || 'assistant';
 export const IPC_POLL_INTERVAL = 1000;
 export const IDLE_TIMEOUT = parseInt(process.env.IDLE_TIMEOUT || '1800000', 10); // 30min default — how long to keep container alive after last result
 export const MAX_CONCURRENT_CONTAINERS = Math.max(
