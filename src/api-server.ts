@@ -6,9 +6,12 @@
  * Returns SSE stream with chunks and a done marker.
  */
 import crypto from 'crypto';
+import fs from 'fs';
+import path from 'path';
 import { createServer, Server, IncomingMessage, ServerResponse } from 'http';
 
 import { ContainerOutput, runContainerAgent } from './container-runner.js';
+import { DATA_DIR } from './config.js';
 import { logger } from './logger.js';
 import { RegisteredGroup } from './types.js';
 
@@ -28,6 +31,24 @@ interface QueryRequest {
   groupId?: string;
   history?: Array<{ role: 'user' | 'assistant'; content: string }>;
 }
+
+/**
+ * Tracks an active container for a group.
+ * The onResult callback is swapped on each new HTTP request so that
+ * output from piped messages routes to the correct response.
+ */
+interface ActiveContainer {
+  groupFolder: string;
+  /** Mutable callback — points to the current HTTP response handler. */
+  onResult: ((result: ContainerOutput) => void) | null;
+  /** Resolves the current HTTP request's promise. */
+  resolveRequest: (() => void) | null;
+  /** True while runContainerAgent hasn't resolved yet (container alive). */
+  alive: boolean;
+}
+
+/** Per-group active container map, keyed by groupFolder. */
+const activeContainers = new Map<string, ActiveContainer>();
 
 function readBody(req: IncomingMessage): Promise<Buffer> {
   return new Promise((resolve, reject) => {
@@ -66,6 +87,29 @@ function formatPrompt(
   }
   prompt += `<message sender="User" time="${new Date().toISOString()}">${text}</message>`;
   return prompt;
+}
+
+/**
+ * Write a follow-up message to the container via IPC input directory.
+ * Same mechanism as GroupQueue.sendMessage.
+ */
+function pipeViaIpc(groupFolder: string, prompt: string): boolean {
+  const inputDir = path.join(DATA_DIR, 'ipc', groupFolder, 'input');
+  try {
+    fs.mkdirSync(inputDir, { recursive: true });
+    const filename = `${Date.now()}-${Math.random().toString(36).slice(2, 6)}.json`;
+    const filepath = path.join(inputDir, filename);
+    const tempPath = `${filepath}.tmp`;
+    fs.writeFileSync(
+      tempPath,
+      JSON.stringify({ type: 'message', text: prompt }),
+    );
+    fs.renameSync(tempPath, filepath);
+    return true;
+  } catch (err) {
+    logger.debug({ groupFolder, err }, 'Failed to write IPC message for API');
+    return false;
+  }
 }
 
 export function startApiServer(config: ApiServerConfig): Promise<Server> {
@@ -143,39 +187,58 @@ export function startApiServer(config: ApiServerConfig): Promise<Server> {
         });
 
         const prompt = formatPrompt(parsed.text, parsed.history);
-        const sessionId = config.getSession(group.folder);
 
         logger.info(
           { group: group.name, textLength: parsed.text.length },
           'API query received',
         );
 
-        // Wrap runContainerAgent in a promise that resolves on first output,
-        // so the HTTP response completes without waiting for the container to exit.
-        // The container stays alive for reuse (idle timeout handles cleanup).
-        await new Promise<void>((resolveRequest, rejectRequest) => {
-          let responded = false;
+        const existing = activeContainers.get(group.folder);
 
-          runContainerAgent(
-            group,
-            {
-              prompt,
-              sessionId,
-              groupFolder: group.folder,
-              chatJid,
-              isMain: false,
-            },
-            (proc, containerName) => {
-              // Kill the container process when client disconnects
-              req.on('close', () => {
-                logger.debug(
-                  { containerName },
-                  'API client disconnected, killing container',
-                );
-                proc.kill('SIGTERM');
-              });
-            },
-            async (result: ContainerOutput) => {
+        if (existing?.alive) {
+          // Reuse existing container — pipe via IPC
+          logger.info(
+            { group: group.name },
+            'Piping API query to existing container',
+          );
+
+          await new Promise<void>((resolveRequest) => {
+            // Swap the output handler to this HTTP response
+            existing.onResult = (result: ContainerOutput) => {
+              if (result.newSessionId) {
+                config.setSession(group.folder, result.newSessionId);
+              }
+              if (result.result) {
+                const text = result.result
+                  .replace(/<internal>[\s\S]*?<\/internal>/g, '')
+                  .trim();
+                if (text) {
+                  sendSSE(res, { type: 'chunk', text });
+                }
+              }
+              if (result.result) {
+                existing.onResult = null;
+                existing.resolveRequest = null;
+                resolveRequest();
+              }
+            };
+            existing.resolveRequest = resolveRequest;
+
+            pipeViaIpc(group.folder, prompt);
+          });
+        } else {
+          // Spawn new container
+          const sessionId = config.getSession(group.folder);
+          const tracker: ActiveContainer = {
+            groupFolder: group.folder,
+            onResult: null,
+            resolveRequest: null,
+            alive: true,
+          };
+          activeContainers.set(group.folder, tracker);
+
+          await new Promise<void>((resolveRequest, rejectRequest) => {
+            tracker.onResult = (result: ContainerOutput) => {
               if (result.newSessionId) {
                 config.setSession(group.folder, result.newSessionId);
               }
@@ -188,26 +251,62 @@ export function startApiServer(config: ApiServerConfig): Promise<Server> {
                 }
               }
               // Resolve HTTP response after first output with a result
-              if (!responded && result.result) {
-                responded = true;
-                resolveRequest();
+              if (result.result && tracker.resolveRequest) {
+                const r = tracker.resolveRequest;
+                tracker.onResult = null;
+                tracker.resolveRequest = null;
+                r();
               }
-            },
-          )
-            .then(() => {
-              // Container exited — resolve if we haven't already
-              if (!responded) {
-                responded = true;
-                resolveRequest();
-              }
-            })
-            .catch((err) => {
-              if (!responded) {
-                responded = true;
-                rejectRequest(err);
-              }
-            });
-        });
+            };
+            tracker.resolveRequest = resolveRequest;
+
+            runContainerAgent(
+              group,
+              {
+                prompt,
+                sessionId,
+                groupFolder: group.folder,
+                chatJid,
+                isMain: false,
+              },
+              (proc, containerName) => {
+                // Kill the container process when client disconnects
+                req.on('close', () => {
+                  logger.debug(
+                    { containerName },
+                    'API client disconnected, killing container',
+                  );
+                  proc.kill('SIGTERM');
+                });
+              },
+              async (result: ContainerOutput) => {
+                // Delegate to the mutable handler — routes to whichever
+                // HTTP response is currently waiting.
+                if (tracker.onResult) {
+                  tracker.onResult(result);
+                }
+              },
+            )
+              .then(() => {
+                // Container exited — clean up tracker
+                tracker.alive = false;
+                activeContainers.delete(group.folder);
+                // Resolve any pending request
+                if (tracker.resolveRequest) {
+                  tracker.resolveRequest();
+                  tracker.resolveRequest = null;
+                }
+              })
+              .catch((err) => {
+                tracker.alive = false;
+                activeContainers.delete(group.folder);
+                if (tracker.resolveRequest) {
+                  tracker.resolveRequest = null;
+                  rejectRequest(err);
+                }
+              });
+          });
+        }
 
         sendSSE(res, { type: 'done' });
         res.end();
