@@ -2,6 +2,9 @@ import fs from 'fs';
 import path from 'path';
 
 import {
+  API_GROUP_ID,
+  API_PORT,
+  API_TOKEN,
   ASSISTANT_NAME,
   CREDENTIAL_PROXY_PORT,
   DATA_DIR,
@@ -10,6 +13,7 @@ import {
   TIMEZONE,
   TRIGGER_PATTERN,
 } from './config.js';
+import { startApiServer } from './api-server.js';
 import { startCredentialProxy } from './credential-proxy.js';
 import './channels/index.js';
 import {
@@ -602,10 +606,27 @@ async function main(): Promise<void> {
     PROXY_BIND_HOST,
   );
 
+  // Start API server for direct client access (optional — requires API_TOKEN)
+  let apiServer: import('http').Server | undefined;
+  if (API_TOKEN) {
+    apiServer = await startApiServer({
+      port: API_PORT,
+      token: API_TOKEN,
+      defaultGroupId: API_GROUP_ID,
+      getRegisteredGroups: () => registeredGroups,
+      getSession: (folder) => sessions[folder],
+      setSession: (folder, id) => {
+        sessions[folder] = id;
+        setSession(folder, id);
+      },
+    });
+  }
+
   // Graceful shutdown handlers
   const shutdown = async (signal: string) => {
     logger.info({ signal }, 'Shutdown signal received');
     proxyServer.close();
+    apiServer?.close();
     await queue.shutdown(10000);
     for (const ch of channels) await ch.disconnect();
     process.exit(0);

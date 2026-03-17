@@ -54,6 +54,12 @@ export const CREDENTIAL_PROXY_PORT = parseInt(
   process.env.CREDENTIAL_PROXY_PORT || '3001',
   10,
 );
+
+// API server for direct client access (pi-assistant, etc.)
+// Only starts when API_TOKEN is set.
+export const API_PORT = parseInt(process.env.API_PORT || '3002', 10);
+export const API_TOKEN = process.env.API_TOKEN || '';
+export const API_GROUP_ID = process.env.API_GROUP_ID || 'assistant';
 export const IPC_POLL_INTERVAL = 1000;
 export const IDLE_TIMEOUT = parseInt(process.env.IDLE_TIMEOUT || '1800000', 10); // 30min default — how long to keep container alive after last result
 export const MAX_CONCURRENT_CONTAINERS = Math.max(
