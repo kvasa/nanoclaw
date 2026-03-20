@@ -455,19 +455,13 @@ async function runQuery(
   };
 
   const optionalMcps: Record<string, { command: string; args: string[]; env?: Record<string, string> }> = {
-    gmail: {
-      command: 'npx',
-      args: ['-y', '@gongrzhe/server-gmail-autoauth-mcp'],
-    },
     rohlik: {
-      command: 'npx',
+      // Use sh -c so credentials are read from env at runtime, not embedded in
+      // process args where they would be visible in `ps aux` / /proc/$pid/cmdline.
+      command: 'sh',
       args: [
-        'mcp-remote',
-        'https://mcp.rohlik.cz/mcp',
-        '--header',
-        `rhl-email: ${process.env.RHL_EMAIL || ''}`,
-        '--header',
-        `rhl-pass: ${process.env.RHL_PASS || ''}`,
+        '-c',
+        'npx mcp-remote https://mcp.rohlik.cz/mcp --header "rhl-email: $RHL_EMAIL" --header "rhl-pass: $RHL_PASS"',
       ],
     },
     calendar: {
@@ -477,6 +471,14 @@ async function runQuery(
         CALDAV_BASE_URL: process.env.CALDAV_BASE_URL || 'https://caldav.icloud.com/',
         CALDAV_USERNAME: process.env.APPLE_ID || '',
         CALDAV_PASSWORD: process.env.APPLE_APP_PASSWORD || '',
+      },
+    },
+    garmin: {
+      command: 'npx',
+      args: ['-y', '@nicolasvegam/garmin-connect-mcp'],
+      env: {
+        GARMIN_EMAIL: process.env.GARMIN_EMAIL || '',
+        GARMIN_PASSWORD: process.env.GARMIN_PASSWORD || '',
       },
     },
   };

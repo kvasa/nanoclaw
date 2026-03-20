@@ -8,6 +8,7 @@ import os from 'os';
 import path from 'path';
 
 import { readEnvFile } from './env.js';
+import { NANOCLAW_CREDS_TOKEN } from './creds-token.js';
 import {
   CONTAINER_IMAGE,
   CONTAINER_MAX_OUTPUT_SIZE,
@@ -281,6 +282,8 @@ function buildContainerArgs(
     '-e',
     `ANTHROPIC_BASE_URL=http://${CONTAINER_HOST_GATEWAY}:${CREDENTIAL_PROXY_PORT}`,
   );
+  // Token for authenticating /mcp-creds requests (fetched by entrypoint.sh at startup)
+  args.push('-e', `NANOCLAW_CREDS_TOKEN=${NANOCLAW_CREDS_TOKEN}`);
 
   // Mirror the host's auth method with a placeholder value.
   // API key mode: SDK sends x-api-key, proxy replaces with real key.
@@ -301,15 +304,7 @@ function buildContainerArgs(
   }
 
   // Pass model and log detail level to agent-runner
-  const agentConfig = readEnvFile([
-    'CLAUDE_MODEL',
-    'LLM_LOG_DETAIL',
-    'RHL_EMAIL',
-    'RHL_PASS',
-    'APPLE_ID',
-    'APPLE_APP_PASSWORD',
-    'CALDAV_BASE_URL',
-  ]);
+  const agentConfig = readEnvFile(['CLAUDE_MODEL', 'LLM_LOG_DETAIL']);
   const claudeModel = process.env.CLAUDE_MODEL || agentConfig.CLAUDE_MODEL;
   const llmLogDetail = process.env.LLM_LOG_DETAIL || agentConfig.LLM_LOG_DETAIL;
   if (claudeModel) {
@@ -319,24 +314,16 @@ function buildContainerArgs(
     args.push('-e', `LLM_LOG_DETAIL=${llmLogDetail}`);
   }
 
-  // Rohlik MCP credentials (only when rohlik is enabled)
-  if (enabledMcpServers?.includes('rohlik')) {
-    const rhlEmail = process.env.RHL_EMAIL || agentConfig.RHL_EMAIL;
-    const rhlPass = process.env.RHL_PASS || agentConfig.RHL_PASS;
-    if (rhlEmail) args.push('-e', `RHL_EMAIL=${rhlEmail}`);
-    if (rhlPass) args.push('-e', `RHL_PASS=${rhlPass}`);
-  }
+  // MCP credentials (Rohlik, Garmin, Calendar) are NOT passed as -e flags here —
+  // they would be visible via `docker inspect`. Instead, the container's entrypoint.sh
+  // fetches them from the credential proxy at startup (/mcp-creds endpoint).
 
-  // Apple Calendar MCP credentials (only when calendar is enabled)
-  if (enabledMcpServers?.includes('calendar')) {
-    const appleId = process.env.APPLE_ID || agentConfig.APPLE_ID;
-    const applePass =
-      process.env.APPLE_APP_PASSWORD || agentConfig.APPLE_APP_PASSWORD;
-    if (appleId) args.push('-e', `APPLE_ID=${appleId}`);
-    if (applePass) args.push('-e', `APPLE_APP_PASSWORD=${applePass}`);
-    const caldavUrl =
-      process.env.CALDAV_BASE_URL || agentConfig.CALDAV_BASE_URL;
-    if (caldavUrl) args.push('-e', `CALDAV_BASE_URL=${caldavUrl}`);
+  // Garmin: mount cached OAuth tokens so MCP server doesn't need to re-authenticate
+  if (enabledMcpServers?.includes('garmin')) {
+    const garminTokenDir = path.join(os.homedir(), '.garmin-mcp');
+    if (fs.existsSync(garminTokenDir)) {
+      args.push('-v', `${garminTokenDir}:/home/node/.garmin-mcp:ro`);
+    }
   }
 
   // Run as host user so bind-mounted files are accessible.

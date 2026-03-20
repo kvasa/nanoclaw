@@ -37,7 +37,14 @@ function detectProxyBindHost(): string {
     const ipv4 = docker0.find((a) => a.family === 'IPv4');
     if (ipv4) return ipv4.address;
   }
-  return '0.0.0.0';
+  console.warn(
+    '[nanoclaw] WARNING: docker0 interface not found. Credential proxy will bind to 127.0.0.1 ' +
+    '(loopback only) — containers will NOT be able to reach it. ' +
+    'Set CREDENTIAL_PROXY_HOST to your Docker bridge IP, e.g.: ' +
+    'CREDENTIAL_PROXY_HOST=172.17.0.1\n' +
+    'Find it with: docker network inspect bridge --format "{{range .IPAM.Config}}{{.Gateway}}{{end}}"',
+  );
+  return '127.0.0.1';
 }
 
 /** CLI args needed for the container to resolve the host gateway. */
@@ -59,7 +66,7 @@ export function readonlyMountArgs(
 
 /** Returns the shell command to stop a container by name. */
 export function stopContainer(name: string): string {
-  return `${CONTAINER_RUNTIME_BIN} stop ${name}`;
+  return `${CONTAINER_RUNTIME_BIN} stop "${name}"`;
 }
 
 /** Ensure the container runtime is running, starting it if needed. */

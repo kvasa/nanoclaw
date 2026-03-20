@@ -23,7 +23,7 @@ const isMain = process.env.NANOCLAW_IS_MAIN === '1';
 function writeIpcFile(dir: string, data: object): string {
   fs.mkdirSync(dir, { recursive: true });
 
-  const filename = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}.json`;
+  const filename = `${crypto.randomUUID()}.json`;
   const filepath = path.join(dir, filename);
 
   // Atomic write: temp file then rename
@@ -356,7 +356,7 @@ SCHEDULE VALUE FORMAT (all times are LOCAL timezone):
     // Non-main groups can only schedule for themselves
     const targetJid = isMain && args.target_group_jid ? args.target_group_jid : chatJid;
 
-    const taskId = `task-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const taskId = `task-${crypto.randomUUID()}`;
 
     const data = {
       type: 'schedule_task',
@@ -555,7 +555,7 @@ Query examples:
       .describe('Maximum number of emails to return (default: 10, max: 50)'),
   },
   async (args) => {
-    const requestId = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const requestId = crypto.randomUUID();
     const responseFile = path.join(IPC_DIR, 'input', `read_emails_${requestId}.json`);
     const TIMEOUT_MS = 30_000;
     const POLL_MS = 500;

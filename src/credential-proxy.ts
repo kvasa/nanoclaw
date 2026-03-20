@@ -16,6 +16,7 @@ import { request as httpRequest, RequestOptions } from 'http';
 
 import { readEnvFile } from './env.js';
 import { logger } from './logger.js';
+import { NANOCLAW_CREDS_TOKEN } from './creds-token.js';
 
 export type AuthMode = 'api-key' | 'oauth';
 
@@ -46,6 +47,33 @@ export function startCredentialProxy(
 
   return new Promise((resolve, reject) => {
     const server = createServer((req, res) => {
+      // Serve MCP credentials to containers so they are never passed as docker -e flags.
+      // Token auth prevents rogue processes on the docker bridge from reading credentials.
+      if (req.method === 'GET' && req.url === '/mcp-creds') {
+        const auth = req.headers['authorization'];
+        if (!auth || auth !== `Bearer ${NANOCLAW_CREDS_TOKEN}`) {
+          res.writeHead(401, { 'Content-Type': 'text/plain' });
+          res.end('Unauthorized');
+          return;
+        }
+        const mcpCreds = readEnvFile([
+          'RHL_EMAIL',
+          'RHL_PASS',
+          'APPLE_ID',
+          'APPLE_APP_PASSWORD',
+          'CALDAV_BASE_URL',
+          'GARMIN_EMAIL',
+          'GARMIN_PASSWORD',
+        ]);
+        const body = Buffer.from(JSON.stringify(mcpCreds));
+        res.writeHead(200, {
+          'Content-Type': 'application/json',
+          'Content-Length': body.length,
+        });
+        res.end(body);
+        return;
+      }
+
       const chunks: Buffer[] = [];
       req.on('data', (c) => chunks.push(c));
       req.on('end', () => {
