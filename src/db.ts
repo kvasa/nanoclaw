@@ -579,9 +579,14 @@ export function getRegisteredGroup(
     folder: row.folder,
     trigger: row.trigger_pattern,
     added_at: row.added_at,
-    containerConfig: row.container_config
-      ? JSON.parse(row.container_config)
-      : undefined,
+    containerConfig: (() => {
+      if (!row.container_config) return undefined;
+      try {
+        return JSON.parse(row.container_config);
+      } catch {
+        return undefined;
+      }
+    })(),
     requiresTrigger:
       row.requires_trigger === null ? undefined : row.requires_trigger === 1,
     isMain: row.is_main === 1 ? true : undefined,

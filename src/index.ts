@@ -209,7 +209,7 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
 
   const channel = findChannel(channels, chatJid);
   if (!channel) {
-    console.log(`Warning: no channel owns JID ${chatJid}, skipping messages`);
+    logger.warn({ chatJid }, 'No channel owns JID, skipping messages');
     return true;
   }
 
@@ -434,6 +434,7 @@ async function runAgent(
         groupFolder: group.folder,
         chatJid,
         isMain,
+        assistantName: ASSISTANT_NAME,
         enabledMcpServers: group.containerConfig?.enabledMcpServers,
         triggerMessageTs,
       },
@@ -518,9 +519,7 @@ async function startMessageLoop(): Promise<void> {
 
           const channel = findChannel(channels, chatJid);
           if (!channel) {
-            console.log(
-              `Warning: no channel owns JID ${chatJid}, skipping messages`,
-            );
+            logger.warn({ chatJid }, 'No channel owns JID, skipping messages');
             continue;
           }
 
@@ -795,7 +794,7 @@ async function main(): Promise<void> {
     sendMessage: async (jid, rawText) => {
       const channel = findChannel(channels, jid);
       if (!channel) {
-        console.log(`Warning: no channel owns JID ${jid}, cannot send message`);
+        logger.warn({ jid }, 'No channel owns JID, cannot send message');
         return;
       }
       const text = formatOutbound(rawText);
@@ -848,6 +847,19 @@ async function main(): Promise<void> {
 
       if (!fs.existsSync(hostPath)) {
         throw new Error(`File not found: ${containerPath}`);
+      }
+
+      // Resolve symlinks and verify the real path is still within groupDir.
+      // This prevents a container from creating a symlink that points outside
+      // its group directory (e.g. to /etc/passwd).
+      let realPath: string;
+      try {
+        realPath = fs.realpathSync(hostPath);
+      } catch {
+        throw new Error(`File not accessible: ${containerPath}`);
+      }
+      if (!realPath.startsWith(groupDir + path.sep) && realPath !== groupDir) {
+        throw new Error('Symlink traversal blocked');
       }
 
       return channel.sendFile(jid, hostPath, options);

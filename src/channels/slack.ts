@@ -488,8 +488,33 @@ export class SlackChannel implements Channel {
         });
         if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
 
+        // Reject files larger than 100 MB before allocating memory
+        const SLACK_FILE_MAX_BYTES = 100 * 1024 * 1024;
+        const contentLength = Number(resp.headers.get('content-length') ?? 0);
+        if (contentLength > SLACK_FILE_MAX_BYTES) {
+          logger.warn(
+            { name, contentLength },
+            'Slack file too large, skipping',
+          );
+          descriptions.push(`[${typeLabel}: ${name} — too large to download]`);
+          continue;
+        }
+
         const buffer = Buffer.from(await resp.arrayBuffer());
-        const filename = `${Date.now()}-${name}`;
+        if (buffer.length > SLACK_FILE_MAX_BYTES) {
+          logger.warn(
+            { name, size: buffer.length },
+            'Slack file too large after download, skipping',
+          );
+          descriptions.push(`[${typeLabel}: ${name} — too large to download]`);
+          continue;
+        }
+
+        // Sanitize filename: only allow safe characters to prevent path traversal
+        const safeName = name
+          .replace(/[^a-zA-Z0-9._\- ]/g, '_')
+          .replace(/\.\.+/g, '_');
+        const filename = `${Date.now()}-${safeName}`;
         fs.writeFileSync(path.join(uploadDir, filename), buffer);
 
         const containerPath = `/workspace/group/slack-uploads/${filename}`;

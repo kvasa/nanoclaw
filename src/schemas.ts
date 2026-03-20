@@ -34,6 +34,31 @@ export const IpcSendVoiceSchema = z.object({
   caption: z.string().optional(),
 });
 
+export const IpcSendEmailSchema = z.object({
+  type: z.literal('send_email'),
+  threadJid: z
+    .string()
+    .regex(/^gmail:[a-f0-9]+$/i, 'Invalid Gmail thread JID format'),
+  text: z.string(),
+});
+
+export const IpcComposeEmailSchema = z.object({
+  type: z.literal('compose_email'),
+  to: z.string().email(),
+  subject: z.string(),
+  body: z.string(),
+});
+
+export const IpcReadEmailsSchema = z.object({
+  type: z.literal('read_emails'),
+  query: z.string().optional(),
+  maxResults: z.number().int().min(1).max(50).optional(),
+  requestId: z
+    .string()
+    .max(128)
+    .regex(/^[a-zA-Z0-9_-]+$/),
+});
+
 export const IpcFileMessageSchema = z.discriminatedUnion('type', [
   IpcMessageSchema,
   IpcSendFileSchema,

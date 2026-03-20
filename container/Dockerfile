@@ -61,6 +61,36 @@ COPY <<'ENTRY' /app/entrypoint.sh
 #!/bin/bash
 set -e
 cd /app
+
+# Fetch MCP credentials from the host credential proxy before reading stdin.
+# Credentials are NOT passed as docker -e flags (they would be visible in docker inspect).
+# Values are base64-encoded in transit to safely handle any special characters.
+if [ -n "$ANTHROPIC_BASE_URL" ]; then
+  node -e "
+const http = require('http');
+const u = new URL('/mcp-creds', process.env.ANTHROPIC_BASE_URL);
+const opts = {host: u.hostname, port: Number(u.port), path: u.pathname, headers: process.env.NANOCLAW_CREDS_TOKEN ? {Authorization: 'Bearer ' + process.env.NANOCLAW_CREDS_TOKEN} : {}};
+http.get(opts, (res) => {
+  let d = '';
+  res.on('data', c => d += c);
+  res.on('end', () => {
+    try {
+      const creds = JSON.parse(d);
+      for (const [k, v] of Object.entries(creds)) {
+        if (v) process.stdout.write(k + '\t' + Buffer.from(String(v)).toString('base64') + '\n');
+      }
+    } catch (e) { process.stderr.write('[mcp-creds] parse error: ' + e.message + '\n'); }
+  });
+}).on('error', e => process.stderr.write('[mcp-creds] fetch error: ' + e.message + '\n'));
+" > /tmp/.mcp-creds || true
+  if [ -s /tmp/.mcp-creds ]; then
+    while IFS=$'\t' read -r cred_key cred_b64; do
+      [[ "$cred_key" =~ ^[A-Z_][A-Z0-9_]*$ ]] && export "${cred_key}=$(printf '%s' "${cred_b64}" | base64 -d)"
+    done < /tmp/.mcp-creds
+  fi
+  rm -f /tmp/.mcp-creds
+fi
+
 CURRENT_HASH=$(find src -type f | sort | xargs sha256sum | sha256sum | cut -d' ' -f1)
 BUILD_HASH=$(cat .source-hash 2>/dev/null || echo "")
 if [ "$CURRENT_HASH" = "$BUILD_HASH" ] && [ -d dist ]; then
