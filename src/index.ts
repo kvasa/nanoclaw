@@ -16,14 +16,13 @@ import {
 } from './config.js';
 import { startApiServer, SlackNotifier } from './api-server.js';
 import { SlackChannel } from './channels/slack.js';
+import { GmailChannel } from './channels/gmail.js';
 import { startCredentialProxy } from './credential-proxy.js';
 import './channels/index.js';
 import {
   getChannelFactory,
   getRegisteredChannelNames,
 } from './channels/registry.js';
-import { GmailChannel } from './channels/gmail.js';
-import { SlackChannel } from './channels/slack.js';
 import {
   ContainerOutput,
   runContainerAgent,
