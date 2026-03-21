@@ -82,12 +82,20 @@ export class GmailChannel implements Channel {
   }
 
   async connect(): Promise<void> {
+    if (
+      process.env.GMAIL_ENABLED === '0' ||
+      process.env.GMAIL_ENABLED === 'false'
+    ) {
+      logger.debug('Gmail channel disabled via GMAIL_ENABLED=0');
+      return;
+    }
+
     const credDir = path.join(os.homedir(), '.gmail-mcp');
     const keysPath = path.join(credDir, 'gcp-oauth.keys.json');
     const tokensPath = path.join(credDir, 'credentials.json');
 
     if (!fs.existsSync(keysPath) || !fs.existsSync(tokensPath)) {
-      logger.warn(
+      logger.debug(
         'Gmail credentials not found in ~/.gmail-mcp/. Skipping Gmail channel. Run /add-gmail to set up.',
       );
       return;
