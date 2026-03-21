@@ -292,7 +292,7 @@ function buildContainerArgs(
   if (enabledMcpServers?.includes('garmin')) {
     const garminTokenDir = path.join(os.homedir(), '.garmin-mcp');
     if (fs.existsSync(garminTokenDir)) {
-      args.push('-v', `${garminTokenDir}:/home/node/.garmin-mcp:ro`);
+      args.push('-v', `${garminTokenDir}:/home/node/.garmin-mcp:rw`);
     }
   }
 
