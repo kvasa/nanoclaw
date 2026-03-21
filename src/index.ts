@@ -224,6 +224,19 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
 
   if (missedMessages.length === 0) return true;
 
+  // Handle /clear command — reset session and message cursor
+  const hasClear = missedMessages.some((m) => /\/clear\b/i.test(m.content));
+  if (hasClear) {
+    delete sessions[group.folder];
+    deleteSession(group.folder);
+    lastAgentTimestamp[chatJid] =
+      missedMessages[missedMessages.length - 1].timestamp;
+    saveState(chatJid);
+    await channel.sendMessage(chatJid, 'Context cleared.');
+    logger.info({ group: group.name }, '/clear command processed');
+    return true;
+  }
+
   // For non-main groups, check if trigger is required and present
   if (!isMainGroup && group.requiresTrigger !== false) {
     const allowlistCfg = loadSenderAllowlist();
@@ -538,6 +551,25 @@ async function startMessageLoop(): Promise<void> {
           const messagesToSend =
             allPending.length > 0 ? allPending : groupMessages;
           const formatted = formatMessages(messagesToSend, TIMEZONE);
+
+          // Handle /clear command — reset session, kill active container
+          const hasClearCmd = messagesToSend.some((m) =>
+            /\/clear\b/i.test(m.content),
+          );
+          if (hasClearCmd) {
+            queue.closeStdin(chatJid);
+            delete sessions[group.folder];
+            deleteSession(group.folder);
+            lastAgentTimestamp[chatJid] =
+              messagesToSend[messagesToSend.length - 1].timestamp;
+            saveState(chatJid);
+            await channel.sendMessage(chatJid, 'Context cleared.');
+            logger.info(
+              { group: group.name },
+              '/clear command processed (active container)',
+            );
+            continue;
+          }
 
           if (queue.sendMessage(chatJid, formatted)) {
             // Update threadTs file so the container uses the new message's thread
