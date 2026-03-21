@@ -587,7 +587,11 @@ export function getRegisteredGroup(
     added_at: row.added_at,
     containerConfig: (() => {
       if (!row.container_config) return undefined;
-      try { return JSON.parse(row.container_config); } catch { return undefined; }
+      try {
+        return JSON.parse(row.container_config);
+      } catch {
+        return undefined;
+      }
     })(),
     requiresTrigger:
       row.requires_trigger === null ? undefined : row.requires_trigger === 1,

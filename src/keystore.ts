@@ -33,6 +33,9 @@ export const KEYSTORE_KEYS = new Set([
   'APPLE_APP_PASSWORD',
   'GARMIN_PASSWORD',
   'BACKUP_PASSWORD',
+  'SLACK_BOT_TOKEN',
+  'SLACK_APP_TOKEN',
+  'OPENAI_API_KEY',
 ]);
 
 /** Returns true if the encrypted store is initialised (master key exists). */

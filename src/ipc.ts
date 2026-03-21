@@ -221,7 +221,11 @@ export function startIpcWatcher(deps: IpcDeps): void {
                         { requestId, sourceGroup },
                         'read_emails: requestId path traversal attempt blocked',
                       );
-                      try { fs.unlinkSync(filePath); } catch { /* ignore */ }
+                      try {
+                        fs.unlinkSync(filePath);
+                      } catch {
+                        /* ignore */
+                      }
                       continue;
                     }
                     fs.writeFileSync(

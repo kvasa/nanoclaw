@@ -39,10 +39,10 @@ function detectProxyBindHost(): string {
   }
   console.warn(
     '[nanoclaw] WARNING: docker0 interface not found. Credential proxy will bind to 127.0.0.1 ' +
-    '(loopback only) — containers will NOT be able to reach it. ' +
-    'Set CREDENTIAL_PROXY_HOST to your Docker bridge IP, e.g.: ' +
-    'CREDENTIAL_PROXY_HOST=172.17.0.1\n' +
-    'Find it with: docker network inspect bridge --format "{{range .IPAM.Config}}{{.Gateway}}{{end}}"',
+      '(loopback only) — containers will NOT be able to reach it. ' +
+      'Set CREDENTIAL_PROXY_HOST to your Docker bridge IP, e.g.: ' +
+      'CREDENTIAL_PROXY_HOST=172.17.0.1\n' +
+      'Find it with: docker network inspect bridge --format "{{range .IPAM.Config}}{{.Gateway}}{{end}}"',
   );
   return '127.0.0.1';
 }

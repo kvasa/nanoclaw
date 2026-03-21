@@ -691,8 +691,14 @@ export class GmailChannel implements Channel {
 
   private escapeDelimiter(s: string): string {
     return s
-      .replaceAll(GmailChannel.DELIMITER_BEGIN, '--- [escaped begin delimiter] ---')
-      .replaceAll(GmailChannel.DELIMITER_END, '--- [escaped end delimiter] ---');
+      .replaceAll(
+        GmailChannel.DELIMITER_BEGIN,
+        '--- [escaped begin delimiter] ---',
+      )
+      .replaceAll(
+        GmailChannel.DELIMITER_END,
+        '--- [escaped end delimiter] ---',
+      );
   }
 
   private truncateBody(raw: string): string {
