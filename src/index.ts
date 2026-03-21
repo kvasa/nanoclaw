@@ -4,6 +4,7 @@ import path from 'path';
 import {
   API_GROUP_ID,
   API_PORT,
+  API_SLACK_CHANNEL_ID,
   API_TOKEN,
   ASSISTANT_NAME,
   CREDENTIAL_PROXY_PORT,
@@ -13,7 +14,8 @@ import {
   TIMEZONE,
   TRIGGER_PATTERN,
 } from './config.js';
-import { startApiServer } from './api-server.js';
+import { startApiServer, SlackNotifier } from './api-server.js';
+import { SlackChannel } from './channels/slack.js';
 import { startCredentialProxy } from './credential-proxy.js';
 import './channels/index.js';
 import {
@@ -606,21 +608,8 @@ async function main(): Promise<void> {
     PROXY_BIND_HOST,
   );
 
-  // Start API server for direct client access (optional — requires API_TOKEN)
+  // API server is started after channels connect (needs Slack channel for notifications)
   let apiServer: import('http').Server | undefined;
-  if (API_TOKEN) {
-    apiServer = await startApiServer({
-      port: API_PORT,
-      token: API_TOKEN,
-      defaultGroupId: API_GROUP_ID,
-      getRegisteredGroups: () => registeredGroups,
-      getSession: (folder) => sessions[folder],
-      setSession: (folder, id) => {
-        sessions[folder] = id;
-        setSession(folder, id);
-      },
-    });
-  }
 
   // Graceful shutdown handlers
   const shutdown = async (signal: string) => {
@@ -716,6 +705,52 @@ async function main(): Promise<void> {
         );
       }
     }
+  }
+
+  // Start API server for direct client access (optional — requires API_TOKEN)
+  if (API_TOKEN) {
+    // Build Slack notifier for mirroring API queries to a Slack channel
+    let slackNotifier: SlackNotifier | undefined;
+    if (API_SLACK_CHANNEL_ID) {
+      const slackJid = `slack:${API_SLACK_CHANNEL_ID}`;
+      let lastProgressAt = 0;
+      slackNotifier = {
+        async postQuestion(text: string) {
+          const ch = findChannel(channels, slackJid);
+          if (!ch?.isConnected()) return undefined;
+          return (ch as SlackChannel).sendMessageWithTs(
+            slackJid,
+            `*API Query:*\n${text}`,
+          );
+        },
+        async postProgress(threadTs: string, text: string) {
+          const now = Date.now();
+          if (now - lastProgressAt < 3000) return; // throttle: max 1 per 3s
+          lastProgressAt = now;
+          const ch = findChannel(channels, slackJid);
+          if (!ch?.isConnected()) return;
+          await ch.sendMessage(slackJid, text, threadTs);
+        },
+        async postResult(text: string) {
+          const ch = findChannel(channels, slackJid);
+          if (!ch?.isConnected()) return;
+          await ch.sendMessage(slackJid, text);
+        },
+      };
+    }
+
+    apiServer = await startApiServer({
+      port: API_PORT,
+      token: API_TOKEN,
+      defaultGroupId: API_GROUP_ID,
+      getRegisteredGroups: () => registeredGroups,
+      getSession: (folder) => sessions[folder],
+      setSession: (folder, id) => {
+        sessions[folder] = id;
+        setSession(folder, id);
+      },
+      slackNotifier,
+    });
   }
 
   // Start subsystems (independently of connection handler)

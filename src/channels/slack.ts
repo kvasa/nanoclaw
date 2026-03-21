@@ -237,6 +237,49 @@ export class SlackChannel implements Channel {
     }
   }
 
+  /**
+   * Like sendMessage but returns the Slack message `ts` (needed for threading).
+   * Returns undefined if disconnected or on failure.
+   */
+  async sendMessageWithTs(
+    jid: string,
+    text: string,
+    threadTs?: string,
+  ): Promise<string | undefined> {
+    const channelId = jid.replace(/^slack:/, '');
+
+    if (!this.connected) return undefined;
+
+    try {
+      const threadOpts = threadTs ? { thread_ts: threadTs } : {};
+      if (text.length <= MAX_MESSAGE_LENGTH) {
+        const resp = await this.app.client.chat.postMessage({
+          channel: channelId,
+          text,
+          ...threadOpts,
+        });
+        return resp.ts;
+      } else {
+        let firstTs: string | undefined;
+        for (let i = 0; i < text.length; i += MAX_MESSAGE_LENGTH) {
+          const resp = await this.app.client.chat.postMessage({
+            channel: channelId,
+            text: text.slice(i, i + MAX_MESSAGE_LENGTH),
+            ...threadOpts,
+          });
+          if (!firstTs) firstTs = resp.ts;
+        }
+        return firstTs;
+      }
+    } catch (err) {
+      logger.warn(
+        { jid, err },
+        'Failed to send Slack message (sendMessageWithTs)',
+      );
+      return undefined;
+    }
+  }
+
   async sendFile(
     jid: string,
     filePath: string,

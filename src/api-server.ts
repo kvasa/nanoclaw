@@ -17,6 +17,15 @@ import { RegisteredGroup } from './types.js';
 
 const MAX_BODY_SIZE = 1024 * 1024; // 1MB
 
+export interface SlackNotifier {
+  /** Post the initial question. Returns a thread anchor ts, or undefined on failure. */
+  postQuestion(text: string): Promise<string | undefined>;
+  /** Post a progress update as a thread reply. */
+  postProgress(threadTs: string, text: string): Promise<void>;
+  /** Post the final result to the channel (not threaded). */
+  postResult(text: string): Promise<void>;
+}
+
 export interface ApiServerConfig {
   port: number;
   token: string;
@@ -24,6 +33,7 @@ export interface ApiServerConfig {
   getRegisteredGroups: () => Record<string, RegisteredGroup>;
   getSession: (groupFolder: string) => string | undefined;
   setSession: (groupFolder: string, sessionId: string) => void;
+  slackNotifier?: SlackNotifier;
 }
 
 interface QueryRequest {
@@ -40,6 +50,8 @@ interface ActiveContainer {
   groupFolder: string;
   /** Mutable callback — points to the current HTTP response handler. */
   onResult: ((result: ContainerOutput) => void) | null;
+  /** Mutable callback — receives progress updates from the container. */
+  onProgress: ((text: string) => void) | null;
   /** Resolves the current HTTP request's promise. */
   resolveRequest: (() => void) | null;
   /** True while runContainerAgent hasn't resolved yet (container alive). */
@@ -105,16 +117,10 @@ export function startApiServer(config: ApiServerConfig): Promise<Server> {
       if (req.method === 'OPTIONS') {
         res.writeHead(204, {
           'Access-Control-Allow-Origin': '*',
-          'Access-Control-Allow-Methods': 'POST, OPTIONS',
+          'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
           'Access-Control-Allow-Headers': 'Content-Type, Authorization',
         });
         res.end();
-        return;
-      }
-
-      if (req.method !== 'POST' || req.url !== '/api/query') {
-        res.writeHead(404, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: 'Not found' }));
         return;
       }
 
@@ -127,6 +133,19 @@ export function startApiServer(config: ApiServerConfig): Promise<Server> {
       if (!isAuthorized) {
         res.writeHead(401, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: 'Unauthorized' }));
+        return;
+      }
+
+      // GET /api/check — health check
+      if (req.method === 'GET' && req.url === '/api/check') {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ status: 'ok' }));
+        return;
+      }
+
+      if (req.method !== 'POST' || req.url !== '/api/query') {
+        res.writeHead(404, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Not found' }));
         return;
       }
 
@@ -179,6 +198,14 @@ export function startApiServer(config: ApiServerConfig): Promise<Server> {
           'API query received',
         );
 
+        // Post the question to Slack (fire-and-forget — never blocks SSE)
+        let slackThreadTs: string | undefined;
+        if (config.slackNotifier) {
+          slackThreadTs = await config.slackNotifier
+            .postQuestion(parsed.text)
+            .catch(() => undefined);
+        }
+
         const existing = activeContainers.get(group.folder);
 
         if (existing?.alive) {
@@ -200,12 +227,24 @@ export function startApiServer(config: ApiServerConfig): Promise<Server> {
                   .trim();
                 if (text) {
                   sendSSE(res, { type: 'chunk', text });
+                  if (config.slackNotifier) {
+                    config.slackNotifier.postResult(text).catch(() => {});
+                  }
                 }
               }
               if (result.result) {
                 existing.onResult = null;
+                existing.onProgress = null;
                 existing.resolveRequest = null;
                 resolveRequest();
+              }
+            };
+            existing.onProgress = (text: string) => {
+              sendSSE(res, { type: 'progress', text });
+              if (config.slackNotifier && slackThreadTs) {
+                config.slackNotifier
+                  .postProgress(slackThreadTs, text)
+                  .catch(() => {});
               }
             };
             existing.resolveRequest = resolveRequest;
@@ -218,6 +257,7 @@ export function startApiServer(config: ApiServerConfig): Promise<Server> {
           const tracker: ActiveContainer = {
             groupFolder: group.folder,
             onResult: null,
+            onProgress: null,
             resolveRequest: null,
             alive: true,
           };
@@ -234,14 +274,26 @@ export function startApiServer(config: ApiServerConfig): Promise<Server> {
                   .trim();
                 if (text) {
                   sendSSE(res, { type: 'chunk', text });
+                  if (config.slackNotifier) {
+                    config.slackNotifier.postResult(text).catch(() => {});
+                  }
                 }
               }
               // Resolve HTTP response after first output with a result
               if (result.result && tracker.resolveRequest) {
                 const r = tracker.resolveRequest;
                 tracker.onResult = null;
+                tracker.onProgress = null;
                 tracker.resolveRequest = null;
                 r();
+              }
+            };
+            tracker.onProgress = (text: string) => {
+              sendSSE(res, { type: 'progress', text });
+              if (config.slackNotifier && slackThreadTs) {
+                config.slackNotifier
+                  .postProgress(slackThreadTs, text)
+                  .catch(() => {});
               }
             };
             tracker.resolveRequest = resolveRequest;
@@ -262,6 +314,7 @@ export function startApiServer(config: ApiServerConfig): Promise<Server> {
                     { containerName },
                     'API client disconnected, killing container',
                   );
+                  tracker.onProgress = null;
                   proc.kill('SIGTERM');
                 });
               },
@@ -270,6 +323,11 @@ export function startApiServer(config: ApiServerConfig): Promise<Server> {
                 // HTTP response is currently waiting.
                 if (tracker.onResult) {
                   tracker.onResult(result);
+                }
+              },
+              (text: string) => {
+                if (tracker.onProgress) {
+                  tracker.onProgress(text);
                 }
               },
             )

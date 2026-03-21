@@ -35,6 +35,8 @@ import { RegisteredGroup } from './types.js';
 // Sentinel markers for robust output parsing (must match agent-runner)
 const OUTPUT_START_MARKER = '---NANOCLAW_OUTPUT_START---';
 const OUTPUT_END_MARKER = '---NANOCLAW_OUTPUT_END---';
+const PROGRESS_START_MARKER = '---NANOCLAW_PROGRESS_START---';
+const PROGRESS_END_MARKER = '---NANOCLAW_PROGRESS_END---';
 
 export interface ContainerInput {
   prompt: string;
@@ -320,6 +322,7 @@ export async function runContainerAgent(
   input: ContainerInput,
   onProcess: (proc: ChildProcess, containerName: string) => void,
   onOutput?: (output: ContainerOutput) => Promise<void>,
+  onProgress?: (text: string) => void,
 ): Promise<ContainerOutput> {
   const startTime = Date.now();
 
@@ -347,6 +350,12 @@ export async function runContainerAgent(
       '-e',
       `NANOCLAW_THREAD_TS=${input.triggerMessageTs}`,
     );
+  }
+
+  // Enable stdout-based progress streaming for API clients
+  if (onProgress) {
+    const imageIdx = containerArgs.lastIndexOf(CONTAINER_IMAGE);
+    containerArgs.splice(imageIdx, 0, '-e', 'NANOCLAW_PROGRESS_STDOUT=1');
   }
 
   logger.debug(
@@ -421,9 +430,37 @@ export async function runContainerAgent(
         }
       }
 
+      // Stream-parse for progress markers (before output markers)
+      if (onProgress) {
+        parseBuffer += chunk;
+        let progStart: number;
+        while (
+          (progStart = parseBuffer.indexOf(PROGRESS_START_MARKER)) !== -1
+        ) {
+          const progEnd = parseBuffer.indexOf(PROGRESS_END_MARKER, progStart);
+          if (progEnd === -1) break;
+          const jsonStr = parseBuffer
+            .slice(progStart + PROGRESS_START_MARKER.length, progEnd)
+            .trim();
+          parseBuffer = parseBuffer.slice(progEnd + PROGRESS_END_MARKER.length);
+          try {
+            const parsed = JSON.parse(jsonStr);
+            if (parsed.type === 'progress' && typeof parsed.text === 'string') {
+              onProgress(parsed.text);
+              resetTimeout();
+            }
+          } catch (err) {
+            logger.warn(
+              { group: group.name, error: err },
+              'Failed to parse progress marker',
+            );
+          }
+        }
+      }
+
       // Stream-parse for output markers
       if (onOutput) {
-        parseBuffer += chunk;
+        if (!onProgress) parseBuffer += chunk;
         let startIdx: number;
         while ((startIdx = parseBuffer.indexOf(OUTPUT_START_MARKER)) !== -1) {
           const endIdx = parseBuffer.indexOf(OUTPUT_END_MARKER, startIdx);

@@ -126,6 +126,15 @@ function writeOutput(output: ContainerOutput): void {
   console.log(OUTPUT_END_MARKER);
 }
 
+const PROGRESS_START_MARKER = '---NANOCLAW_PROGRESS_START---';
+const PROGRESS_END_MARKER = '---NANOCLAW_PROGRESS_END---';
+
+function writeProgress(text: string): void {
+  console.log(PROGRESS_START_MARKER);
+  console.log(JSON.stringify({ type: 'progress', text }));
+  console.log(PROGRESS_END_MARKER);
+}
+
 function log(message: string): void {
   console.error(`[agent-runner] ${message}`);
 }
@@ -153,6 +162,12 @@ function sendProgressUpdate(
   groupFolder: string,
   text: string,
 ): void {
+  // Stdout mode: stream progress markers to stdout for API clients
+  if (process.env.NANOCLAW_PROGRESS_STDOUT === '1') {
+    writeProgress(text);
+    return;
+  }
+
   const threadTs = getThreadTs();
   if (!threadTs) return; // No thread context — skip progress updates
 

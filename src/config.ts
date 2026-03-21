@@ -12,6 +12,7 @@ const envConfig = readEnvFile([
   'API_TOKEN',
   'API_PORT',
   'API_GROUP_ID',
+  'API_SLACK_CHANNEL_ID',
 ]);
 
 export const ASSISTANT_NAME =
@@ -67,6 +68,8 @@ export const API_PORT = parseInt(
 export const API_TOKEN = process.env.API_TOKEN || envConfig.API_TOKEN || '';
 export const API_GROUP_ID =
   process.env.API_GROUP_ID || envConfig.API_GROUP_ID || 'assistant';
+export const API_SLACK_CHANNEL_ID =
+  process.env.API_SLACK_CHANNEL_ID || envConfig.API_SLACK_CHANNEL_ID || '';
 export const IPC_POLL_INTERVAL = 1000;
 export const IDLE_TIMEOUT = parseInt(process.env.IDLE_TIMEOUT || '1800000', 10); // 30min default — how long to keep container alive after last result
 export const MAX_CONCURRENT_CONTAINERS = Math.max(
