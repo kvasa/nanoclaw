@@ -10,6 +10,7 @@ export const IpcMessageSchema = z.object({
   type: z.literal('message'),
   chatJid: z.string(),
   text: z.string(),
+  threadTs: z.string().optional(),
 });
 
 export const IpcSendFileSchema = z.object({

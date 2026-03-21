@@ -2,7 +2,7 @@
  * Container Runner for NanoClaw
  * Spawns agent execution in containers and handles IPC
  */
-import { ChildProcess, exec, spawn } from 'child_process';
+import { ChildProcess, execFile, spawn } from 'child_process';
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
@@ -26,7 +26,7 @@ import {
   CONTAINER_RUNTIME_BIN,
   hostGatewayArgs,
   readonlyMountArgs,
-  stopContainer,
+  stopContainerArgs,
 } from './container-runtime.js';
 import { detectAuthMode } from './credential-proxy.js';
 import { validateAdditionalMounts } from './mount-security.js';
@@ -36,6 +36,8 @@ import { CachedEmail, RegisteredGroup } from './types.js';
 // Sentinel markers for robust output parsing (must match agent-runner)
 const OUTPUT_START_MARKER = '---NANOCLAW_OUTPUT_START---';
 const OUTPUT_END_MARKER = '---NANOCLAW_OUTPUT_END---';
+const PROGRESS_START_MARKER = '---NANOCLAW_PROGRESS_START---';
+const PROGRESS_END_MARKER = '---NANOCLAW_PROGRESS_END---';
 
 // Email-related domains blocked at the network level so containers cannot
 // send email directly (bypassing the approval gate), even via subagents.
@@ -80,6 +82,7 @@ export interface ContainerInput {
   isScheduledTask?: boolean;
   assistantName?: string;
   enabledMcpServers?: string[];
+  triggerMessageTs?: string;
 }
 
 export interface ContainerOutput {
@@ -326,6 +329,18 @@ function buildContainerArgs(
     }
   }
 
+  // Apple Calendar MCP credentials (only when calendar is enabled)
+  if (enabledMcpServers?.includes('calendar')) {
+    const appleId = process.env.APPLE_ID || agentConfig.APPLE_ID;
+    const applePass =
+      process.env.APPLE_APP_PASSWORD || agentConfig.APPLE_APP_PASSWORD;
+    if (appleId) args.push('-e', `APPLE_ID=${appleId}`);
+    if (applePass) args.push('-e', `APPLE_APP_PASSWORD=${applePass}`);
+    const caldavUrl =
+      process.env.CALDAV_BASE_URL || agentConfig.CALDAV_BASE_URL;
+    if (caldavUrl) args.push('-e', `CALDAV_BASE_URL=${caldavUrl}`);
+  }
+
   // Run as host user so bind-mounted files are accessible.
   // Skip when running as root (uid 0), as the container's node user (uid 1000),
   // or when getuid is unavailable (native Windows without WSL).
@@ -354,6 +369,7 @@ export async function runContainerAgent(
   input: ContainerInput,
   onProcess: (proc: ChildProcess, containerName: string) => void,
   onOutput?: (output: ContainerOutput) => Promise<void>,
+  onProgress?: (text: string) => void,
 ): Promise<ContainerOutput> {
   const startTime = Date.now();
 
@@ -368,6 +384,26 @@ export async function runContainerAgent(
     containerName,
     input.enabledMcpServers,
   );
+
+  // Inject trigger message timestamp for Slack thread replies.
+  // The agent-runner MCP reads this env var and includes it in IPC messages
+  // so the host can reply in the correct thread.
+  if (input.triggerMessageTs) {
+    // Insert env args before the image name (last element)
+    const imageIdx = containerArgs.lastIndexOf(CONTAINER_IMAGE);
+    containerArgs.splice(
+      imageIdx,
+      0,
+      '-e',
+      `NANOCLAW_THREAD_TS=${input.triggerMessageTs}`,
+    );
+  }
+
+  // Enable stdout-based progress streaming for API clients
+  if (onProgress) {
+    const imageIdx = containerArgs.lastIndexOf(CONTAINER_IMAGE);
+    containerArgs.splice(imageIdx, 0, '-e', 'NANOCLAW_PROGRESS_STDOUT=1');
+  }
 
   logger.debug(
     {
@@ -396,6 +432,14 @@ export async function runContainerAgent(
   fs.mkdirSync(logsDir, { recursive: true });
 
   return new Promise((resolve) => {
+    let settled = false;
+    const safeResolve = (value: ContainerOutput) => {
+      if (!settled) {
+        settled = true;
+        resolve(value);
+      }
+    };
+
     const container = spawn(CONTAINER_RUNTIME_BIN, containerArgs, {
       stdio: ['pipe', 'pipe', 'pipe'],
     });
@@ -433,9 +477,37 @@ export async function runContainerAgent(
         }
       }
 
+      // Stream-parse for progress markers (before output markers)
+      if (onProgress) {
+        parseBuffer += chunk;
+        let progStart: number;
+        while (
+          (progStart = parseBuffer.indexOf(PROGRESS_START_MARKER)) !== -1
+        ) {
+          const progEnd = parseBuffer.indexOf(PROGRESS_END_MARKER, progStart);
+          if (progEnd === -1) break;
+          const jsonStr = parseBuffer
+            .slice(progStart + PROGRESS_START_MARKER.length, progEnd)
+            .trim();
+          parseBuffer = parseBuffer.slice(progEnd + PROGRESS_END_MARKER.length);
+          try {
+            const parsed = JSON.parse(jsonStr);
+            if (parsed.type === 'progress' && typeof parsed.text === 'string') {
+              onProgress(parsed.text);
+              resetTimeout();
+            }
+          } catch (err) {
+            logger.warn(
+              { group: group.name, error: err },
+              'Failed to parse progress marker',
+            );
+          }
+        }
+      }
+
       // Stream-parse for output markers
       if (onOutput) {
-        parseBuffer += chunk;
+        if (!onProgress) parseBuffer += chunk;
         let startIdx: number;
         while ((startIdx = parseBuffer.indexOf(OUTPUT_START_MARKER)) !== -1) {
           const endIdx = parseBuffer.indexOf(OUTPUT_END_MARKER, startIdx);
@@ -502,7 +574,8 @@ export async function runContainerAgent(
         { group: group.name, containerName },
         'Container timeout, stopping gracefully',
       );
-      exec(stopContainer(containerName), { timeout: 15000 }, (err) => {
+      const [bin, ...stopArgs] = stopContainerArgs(containerName);
+      execFile(bin, stopArgs, { timeout: 15000 }, (err) => {
         if (err) {
           logger.warn(
             { group: group.name, containerName, err },
@@ -558,7 +631,7 @@ export async function runContainerAgent(
             'Container timed out after output (idle cleanup)',
           );
           outputChain.then(() => {
-            resolve({
+            safeResolve({
               status: 'success',
               result: null,
               newSessionId,
@@ -572,7 +645,7 @@ export async function runContainerAgent(
           'Container timed out with no output',
         );
 
-        resolve({
+        safeResolve({
           status: 'error',
           result: null,
           error: `Container timed out after ${configTimeout}ms`,
@@ -631,7 +704,7 @@ export async function runContainerAgent(
           'Container exited with error',
         );
 
-        resolve({
+        safeResolve({
           status: 'error',
           result: null,
           error: `Container exited with code ${code}: ${stderr.slice(-200)}`,
@@ -646,7 +719,7 @@ export async function runContainerAgent(
             { group: group.name, duration, newSessionId },
             'Container completed (streaming mode)',
           );
-          resolve({
+          safeResolve({
             status: 'success',
             result: null,
             newSessionId,
@@ -684,7 +757,7 @@ export async function runContainerAgent(
           'Container completed',
         );
 
-        resolve(output);
+        safeResolve(output);
       } catch (err) {
         logger.error(
           {
@@ -696,7 +769,7 @@ export async function runContainerAgent(
           'Failed to parse container output',
         );
 
-        resolve({
+        safeResolve({
           status: 'error',
           result: null,
           error: `Failed to parse container output: ${err instanceof Error ? err.message : String(err)}`,
@@ -710,7 +783,7 @@ export async function runContainerAgent(
         { group: group.name, containerName, error: err },
         'Container spawn error',
       );
-      resolve({
+      safeResolve({
         status: 'error',
         result: null,
         error: `Container spawn error: ${err.message}`,

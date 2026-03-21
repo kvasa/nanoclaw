@@ -21,6 +21,7 @@ import {
 // Slack's chat.postMessage API limits text to ~4000 characters per call.
 // Messages exceeding this are split into sequential chunks.
 const MAX_MESSAGE_LENGTH = 4000;
+const MAX_OUTGOING_QUEUE_SIZE = 1000;
 
 // The message subtypes we process. Bolt delivers all subtypes via app.event('message');
 // we filter to regular messages (GenericMessageEvent, subtype undefined) and bot messages
@@ -104,8 +105,8 @@ export class SlackChannel implements Channel {
       if (!msg.text && (!files || files.length === 0)) return;
 
       // Threaded replies are flattened into the channel conversation.
-      // The agent sees them alongside channel-level messages; responses
-      // always go to the channel, not back into the thread.
+      // The agent sees them alongside channel-level messages.
+      // Progress updates are sent to the thread; final response goes to the channel.
 
       const jid = `slack:${msg.channel}`;
       const timestamp = new Date(parseFloat(msg.ts) * 1000).toISOString();
@@ -171,6 +172,8 @@ export class SlackChannel implements Channel {
         timestamp,
         is_from_me: isBotMessage,
         is_bot_message: isBotMessage,
+        threadTs:
+          (event as unknown as { thread_ts?: string }).thread_ts || msg.ts,
       });
     });
 
@@ -249,11 +252,15 @@ export class SlackChannel implements Channel {
     await this.syncChannelMetadata();
   }
 
-  async sendMessage(jid: string, text: string): Promise<void> {
+  async sendMessage(
+    jid: string,
+    text: string,
+    threadTs?: string,
+  ): Promise<void> {
     const channelId = jid.replace(/^slack:/, '');
 
     if (!this.connected) {
-      this.outgoingQueue.push({ jid, text });
+      this.enqueue(jid, text);
       logger.info(
         { jid, queueSize: this.outgoingQueue.length },
         'Slack disconnected, message queued',
@@ -262,24 +269,73 @@ export class SlackChannel implements Channel {
     }
 
     try {
+      const threadOpts = threadTs ? { thread_ts: threadTs } : {};
       // Slack limits messages to ~4000 characters; split if needed
       if (text.length <= MAX_MESSAGE_LENGTH) {
-        await this.app.client.chat.postMessage({ channel: channelId, text });
+        await this.app.client.chat.postMessage({
+          channel: channelId,
+          text,
+          ...threadOpts,
+        });
       } else {
         for (let i = 0; i < text.length; i += MAX_MESSAGE_LENGTH) {
           await this.app.client.chat.postMessage({
             channel: channelId,
             text: text.slice(i, i + MAX_MESSAGE_LENGTH),
+            ...threadOpts,
           });
         }
       }
-      logger.info({ jid, length: text.length }, 'Slack message sent');
+      logger.info({ jid, length: text.length, threadTs }, 'Slack message sent');
     } catch (err) {
-      this.outgoingQueue.push({ jid, text });
+      this.enqueue(jid, text);
       logger.warn(
         { jid, err, queueSize: this.outgoingQueue.length },
         'Failed to send Slack message, queued',
       );
+    }
+  }
+
+  /**
+   * Like sendMessage but returns the Slack message `ts` (needed for threading).
+   * Returns undefined if disconnected or on failure.
+   */
+  async sendMessageWithTs(
+    jid: string,
+    text: string,
+    threadTs?: string,
+  ): Promise<string | undefined> {
+    const channelId = jid.replace(/^slack:/, '');
+
+    if (!this.connected) return undefined;
+
+    try {
+      const threadOpts = threadTs ? { thread_ts: threadTs } : {};
+      if (text.length <= MAX_MESSAGE_LENGTH) {
+        const resp = await this.app.client.chat.postMessage({
+          channel: channelId,
+          text,
+          ...threadOpts,
+        });
+        return resp.ts;
+      } else {
+        let firstTs: string | undefined;
+        for (let i = 0; i < text.length; i += MAX_MESSAGE_LENGTH) {
+          const resp = await this.app.client.chat.postMessage({
+            channel: channelId,
+            text: text.slice(i, i + MAX_MESSAGE_LENGTH),
+            ...threadOpts,
+          });
+          if (!firstTs) firstTs = resp.ts;
+        }
+        return firstTs;
+      }
+    } catch (err) {
+      logger.warn(
+        { jid, err },
+        'Failed to send Slack message (sendMessageWithTs)',
+      );
+      return undefined;
     }
   }
 
@@ -660,6 +716,18 @@ export class SlackChannel implements Channel {
       logger.debug({ userId, err }, 'Failed to resolve Slack user name');
       return undefined;
     }
+  }
+
+  /** Add a message to the outgoing queue, dropping the oldest if at capacity. */
+  private enqueue(jid: string, text: string): void {
+    if (this.outgoingQueue.length >= MAX_OUTGOING_QUEUE_SIZE) {
+      const dropped = this.outgoingQueue.shift();
+      logger.warn(
+        { jid, droppedJid: dropped?.jid, queueSize: this.outgoingQueue.length },
+        'Slack outgoing queue full, dropping oldest message',
+      );
+    }
+    this.outgoingQueue.push({ jid, text });
   }
 
   private async flushOutgoingQueue(): Promise<void> {
