@@ -201,6 +201,27 @@ function checkDockerGroupStale(): boolean {
   }
 }
 
+function getDockerBridgeIp(): string {
+  // Try docker inspect first (most reliable)
+  try {
+    const out = execSync(
+      'docker network inspect bridge --format "{{range .IPAM.Config}}{{.Gateway}}{{end}}"',
+      { encoding: 'utf-8', stdio: ['ignore', 'pipe', 'ignore'] },
+    ).trim();
+    if (out && /^\d+\.\d+\.\d+\.\d+$/.test(out)) return out;
+  } catch {
+    // docker not available yet
+  }
+  // Fall back to os.networkInterfaces()
+  const ifaces = os.networkInterfaces();
+  const docker0 = ifaces['docker0'];
+  if (docker0) {
+    const ipv4 = docker0.find((a) => a.family === 'IPv4');
+    if (ipv4) return ipv4.address;
+  }
+  return '';
+}
+
 function setupSystemd(
   projectRoot: string,
   nodePath: string,
@@ -233,6 +254,18 @@ function setupSystemd(
     systemctlPrefix = 'systemctl --user';
   }
 
+  // On Linux, Node.js running under systemd may not see the docker0 interface
+  // via os.networkInterfaces(), causing the credential proxy to bind to 127.0.0.1
+  // instead of the Docker bridge IP. Detect the bridge IP at setup time and
+  // hardcode it so containers can always reach the proxy.
+  let credentialProxyHostLine = '';
+  if (os.platform() === 'linux') {
+    const bridgeIp = getDockerBridgeIp();
+    if (bridgeIp) {
+      credentialProxyHostLine = `\nEnvironment=CREDENTIAL_PROXY_HOST=${bridgeIp}`;
+    }
+  }
+
   const unit = `[Unit]
 Description=NanoClaw Personal Assistant
 After=network.target
@@ -244,7 +277,7 @@ WorkingDirectory=${projectRoot}
 Restart=always
 RestartSec=5
 Environment=HOME=${homeDir}
-Environment=PATH=/usr/local/bin:/usr/bin:/bin:${homeDir}/.local/bin
+Environment=PATH=/usr/local/bin:/usr/bin:/bin:${homeDir}/.local/bin${credentialProxyHostLine}
 StandardOutput=append:${projectRoot}/logs/nanoclaw.log
 StandardError=append:${projectRoot}/logs/nanoclaw.error.log
 
