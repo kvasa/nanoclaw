@@ -16,8 +16,21 @@ const FORMAT_VERSION = 1;
 const PBKDF2_ITERATIONS = 100_000;
 const MAX_FILE_SIZE = 50 * 1024 * 1024; // 50MB
 
-const SKIP_DIRS = new Set(['logs', 'node_modules', '.git', 'dist', 'ipc']);
-const SKIP_FILE_PATTERNS = [/^core\.\d+$/, /\.db-wal$/, /\.db-shm$/];
+const SKIP_DIRS = new Set([
+  'logs', 'node_modules', '.git', 'dist', 'ipc',
+  '.next',        // Next.js build cache
+  'venv', '.venv', // Python virtual environments
+  '__pycache__',   // Python bytecode cache
+  '.cache',        // Generic build caches
+]);
+const SKIP_FILE_PATTERNS = [
+  /^core\.\d+$/,
+  /\.db-wal$/,
+  /\.db-shm$/,
+  /\.tgz$/,          // Tar archives
+  /\.tar\.gz$/,      // Tar archives
+  /\.so(\.\d+)*$/,   // Shared libraries (.so, .so.1.14.1)
+];
 
 // ── .env parser (port of src/env.ts) ────────────────────────────────
 
@@ -89,6 +102,28 @@ function copyFile(src, dest, stats) {
   fs.copyFileSync(src, dest);
   stats.files++;
   stats.bytes += stat.size;
+}
+
+// ── Active sessions lookup ───────────────────────────────────────────
+
+function getActiveSessions() {
+  const dbPath = path.join(PROJECT_ROOT, 'store', 'messages.db');
+  if (!fs.existsSync(dbPath)) return {};
+
+  try {
+    const require = createRequire(import.meta.url);
+    const Database = require('better-sqlite3');
+    const db = new Database(dbPath, { readonly: true });
+    const rows = db.prepare('SELECT group_folder, session_id FROM sessions').all();
+    db.close();
+    const result = {};
+    for (const row of rows) {
+      result[row.group_folder] = row.session_id;
+    }
+    return result;
+  } catch {
+    return {};
+  }
 }
 
 // ── SQLite backup ───────────────────────────────────────────────────
@@ -249,13 +284,55 @@ function main() {
       console.log(`  [ok] groups/ (${stats.files} files total so far)`);
     }
 
-    // data/sessions/
-    copyRecursive(
-      path.join(PROJECT_ROOT, 'data', 'sessions'),
-      path.join(tempDir, 'data', 'sessions'),
-      stats
-    );
-    console.log(`  [ok] data/sessions/`);
+    // data/sessions/ (selective: memory, settings, active session transcript only)
+    const sessionsDir = path.join(PROJECT_ROOT, 'data', 'sessions');
+    const activeSessions = getActiveSessions();
+    if (fs.existsSync(sessionsDir)) {
+      for (const group of fs.readdirSync(sessionsDir)) {
+        const groupPath = path.join(sessionsDir, group);
+        if (!fs.statSync(groupPath).isDirectory()) continue;
+        const destGroup = path.join(tempDir, 'data', 'sessions', group);
+
+        // settings.json
+        copyFile(
+          path.join(groupPath, '.claude', 'settings.json'),
+          path.join(destGroup, '.claude', 'settings.json'),
+          stats
+        );
+
+        // memory/
+        copyRecursive(
+          path.join(groupPath, '.claude', 'projects', '-workspace-group', 'memory'),
+          path.join(destGroup, '.claude', 'projects', '-workspace-group', 'memory'),
+          stats
+        );
+
+        // sessions-index.json
+        copyFile(
+          path.join(groupPath, '.claude', 'projects', '-workspace-group', 'sessions-index.json'),
+          path.join(destGroup, '.claude', 'projects', '-workspace-group', 'sessions-index.json'),
+          stats
+        );
+
+        // Active session JSONL transcript only
+        const activeId = activeSessions[group];
+        if (activeId) {
+          copyFile(
+            path.join(groupPath, '.claude', 'projects', '-workspace-group', `${activeId}.jsonl`),
+            path.join(destGroup, '.claude', 'projects', '-workspace-group', `${activeId}.jsonl`),
+            stats
+          );
+        }
+
+        // agent-runner-src/ (per-group customized agent runner)
+        copyRecursive(
+          path.join(groupPath, 'agent-runner-src'),
+          path.join(destGroup, 'agent-runner-src'),
+          stats
+        );
+      }
+      console.log(`  [ok] data/sessions/ (selective, ${stats.files} files total so far)`);
+    }
 
     // data/env/env
     copyFile(
