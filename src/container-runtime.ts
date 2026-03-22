@@ -6,7 +6,10 @@ import { execFileSync, execSync } from 'child_process';
 import fs from 'fs';
 import os from 'os';
 
+import { readEnvFile } from './env.js';
 import { logger } from './logger.js';
+
+const envConfig = readEnvFile(['CREDENTIAL_PROXY_HOST']);
 
 /** The container runtime binary name. */
 export const CONTAINER_RUNTIME_BIN = 'docker';
@@ -21,7 +24,9 @@ export const CONTAINER_HOST_GATEWAY = 'host.docker.internal';
  *   falling back to 0.0.0.0 if the interface isn't found.
  */
 export const PROXY_BIND_HOST =
-  process.env.CREDENTIAL_PROXY_HOST || detectProxyBindHost();
+  process.env.CREDENTIAL_PROXY_HOST ||
+  envConfig.CREDENTIAL_PROXY_HOST ||
+  detectProxyBindHost();
 
 function detectProxyBindHost(): string {
   if (os.platform() === 'darwin') return '127.0.0.1';
