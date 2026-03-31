@@ -1,3 +1,4 @@
+import crypto from 'crypto';
 import fs from 'fs';
 import path from 'path';
 
@@ -432,7 +433,7 @@ export class SlackChannel implements Channel {
     subject: string;
     body: string;
   }): Promise<boolean> {
-    const id = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    const id = `${Date.now()}-${crypto.randomBytes(8).toString('hex')}`;
     const preview =
       opts.body.length > 500 ? `${opts.body.slice(0, 500)}…` : opts.body;
 

@@ -53,8 +53,6 @@ beforeEach(() => {
 
   deps = {
     sendMessage: async () => {},
-    sendFile: async () => {},
-    sendVoice: async () => {},
     registeredGroups: () => groups,
     registerGroup: (jid, group) => {
       groups[jid] = group;
@@ -64,6 +62,9 @@ beforeEach(() => {
     syncGroups: async () => {},
     getAvailableGroups: () => [],
     writeGroupsSnapshot: () => {},
+    onTasksChanged: () => {},
+    sendFile: async () => {},
+    sendVoice: async () => {},
   };
 });
 
@@ -437,47 +438,6 @@ describe('IPC message authorization', () => {
   });
 });
 
-// --- IPC send_file authorization ---
-// Same authorization logic as message: isMain || (targetGroup.folder === sourceGroup)
-
-describe('IPC send_file authorization', () => {
-  function isMessageAuthorized(
-    sourceGroup: string,
-    isMain: boolean,
-    targetChatJid: string,
-    registeredGroups: Record<string, RegisteredGroup>,
-  ): boolean {
-    const targetGroup = registeredGroups[targetChatJid];
-    return isMain || (!!targetGroup && targetGroup.folder === sourceGroup);
-  }
-
-  it('main group can send file to any group', () => {
-    expect(isMessageAuthorized('main', true, 'other@g.us', groups)).toBe(true);
-    expect(isMessageAuthorized('main', true, 'third@g.us', groups)).toBe(true);
-  });
-
-  it('non-main group can send file to its own chat', () => {
-    expect(
-      isMessageAuthorized('other-group', false, 'other@g.us', groups),
-    ).toBe(true);
-  });
-
-  it('non-main group cannot send file to another groups chat', () => {
-    expect(isMessageAuthorized('other-group', false, 'main@g.us', groups)).toBe(
-      false,
-    );
-    expect(
-      isMessageAuthorized('other-group', false, 'third@g.us', groups),
-    ).toBe(false);
-  });
-
-  it('non-main group cannot send file to unregistered JID', () => {
-    expect(
-      isMessageAuthorized('other-group', false, 'unknown@g.us', groups),
-    ).toBe(false);
-  });
-});
-
 // --- schedule_task with cron and interval types ---
 
 describe('schedule_task schedule types', () => {
@@ -640,14 +600,14 @@ describe('schedule_task context_mode', () => {
     expect(tasks[0].context_mode).toBe('isolated');
   });
 
-  it('rejects invalid context_mode via schema validation', async () => {
+  it('defaults invalid context_mode to isolated', async () => {
     await processTaskIpc(
       {
         type: 'schedule_task',
         prompt: 'bad context',
         schedule_type: 'once',
         schedule_value: '2025-06-01T00:00:00',
-        context_mode: 'bogus',
+        context_mode: 'bogus' as any,
         targetJid: 'other@g.us',
       },
       'whatsapp_main',
@@ -655,9 +615,8 @@ describe('schedule_task context_mode', () => {
       deps,
     );
 
-    // Invalid context_mode is now rejected by Zod schema validation
     const tasks = getAllTasks();
-    expect(tasks.length).toBe(0);
+    expect(tasks[0].context_mode).toBe('isolated');
   });
 
   it('defaults missing context_mode to isolated', async () => {

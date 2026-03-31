@@ -45,15 +45,13 @@ RUN npm install
 # Copy source code
 COPY agent-runner/ ./
 
-# Build TypeScript and save source hash for cache invalidation
-RUN npm run build && \
-    find src -type f | sort | xargs sha256sum | sha256sum | cut -d' ' -f1 > .source-hash
+# Build TypeScript
+RUN npm run build
 
 # Create workspace directories
 RUN mkdir -p /workspace/group /workspace/global /workspace/extra /workspace/ipc/messages /workspace/ipc/tasks /workspace/ipc/input
 
-# Create entrypoint script with compilation cache.
-# If the mounted source matches the pre-built version, skip tsc entirely.
+# Create entrypoint script
 # Container input (prompt, group info) is passed via stdin JSON.
 # Credentials are injected by the host's credential proxy — never passed here.
 # Follow-up messages arrive via IPC files in /workspace/ipc/input/
@@ -109,7 +107,7 @@ ENTRY
 RUN chmod +x /app/entrypoint.sh
 
 # Set ownership to node user (non-root) for writable directories
-RUN chown -R node:node /workspace && chmod 777 /home/node
+RUN chown -R node:node /workspace /home/node
 
 # Switch to non-root user (required for --dangerously-skip-permissions)
 USER node

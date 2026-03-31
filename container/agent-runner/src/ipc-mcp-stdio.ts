@@ -4,6 +4,7 @@
  * Reads context from environment variables, writes IPC files for the host.
  */
 
+import crypto from 'crypto';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { z } from 'zod';
@@ -97,7 +98,7 @@ server.tool(
     title: z.string().optional().describe('Title for the uploaded file'),
   },
   async (args) => {
-    // Validate path is within workspace
+    // Validate path is within workspace (string prefix check)
     if (!args.file_path.startsWith('/workspace/group/')) {
       return {
         content: [
@@ -110,8 +111,11 @@ server.tool(
       };
     }
 
-    // Check file exists
-    if (!fs.existsSync(args.file_path)) {
+    // Resolve symlinks to prevent path traversal via symlinks
+    let resolvedPath: string;
+    try {
+      resolvedPath = fs.realpathSync(args.file_path);
+    } catch {
       return {
         content: [
           {
@@ -123,10 +127,22 @@ server.tool(
       };
     }
 
+    if (!resolvedPath.startsWith('/workspace/group/')) {
+      return {
+        content: [
+          {
+            type: 'text' as const,
+            text: 'Error: file_path escapes /workspace/group/ via symlink',
+          },
+        ],
+        isError: true,
+      };
+    }
+
     const data: Record<string, string | object | undefined> = {
       type: 'send_file',
       chatJid,
-      filePath: args.file_path,
+      filePath: resolvedPath,
       groupFolder,
       timestamp: new Date().toISOString(),
     };

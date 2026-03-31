@@ -420,7 +420,7 @@ function drainIpcInput(): string[] {
       try {
         const data = JSON.parse(fs.readFileSync(filePath, 'utf-8'));
         fs.unlinkSync(filePath);
-        if (data.type === 'message' && data.text) {
+        if (data.type === 'message' && typeof data.text === 'string') {
           messages.push(data.text);
         }
       } catch (err) {
@@ -604,7 +604,7 @@ async function runQuery(
       model: CLAUDE_MODEL,
       cwd: '/workspace/group',
       additionalDirectories: extraDirs.length > 0 ? extraDirs : undefined,
-      resume: sessionId || undefined,
+      resume: sessionId,
       resumeSessionAt: resumeAt,
       systemPrompt: globalClaudeMd
         ? {

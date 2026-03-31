@@ -12,18 +12,17 @@ import path from 'path';
 import pino from 'pino';
 
 import { MOUNT_ALLOWLIST_PATH } from './config.js';
-import { readEnvFile } from './env.js';
 import { AdditionalMount, AllowedRoot, MountAllowlist } from './types.js';
 
-const envLogLevel = readEnvFile(['LOG_LEVEL']);
 const logger = pino({
-  level: process.env.LOG_LEVEL || envLogLevel.LOG_LEVEL || 'info',
+  level: process.env.LOG_LEVEL || 'info',
   transport: { target: 'pino-pretty', options: { colorize: true } },
 });
 
-// Cache the allowlist in memory - only reloads on process restart
+// Cache the allowlist in memory - reloads automatically when the file changes
 let cachedAllowlist: MountAllowlist | null = null;
 let allowlistLoadError: string | null = null;
+let cachedAllowlistMtime: number | null = null;
 
 /**
  * Default blocked patterns - paths that should never be mounted
@@ -54,13 +53,25 @@ const DEFAULT_BLOCKED_PATTERNS = [
  * Result is cached in memory for the lifetime of the process.
  */
 export function loadMountAllowlist(): MountAllowlist | null {
-  if (cachedAllowlist !== null) {
-    return cachedAllowlist;
-  }
-
-  if (allowlistLoadError !== null) {
-    // Already tried and failed, don't spam logs
-    return null;
+  // Check if the file has changed since last load
+  if (cachedAllowlist !== null || allowlistLoadError !== null) {
+    try {
+      const stat = fs.statSync(MOUNT_ALLOWLIST_PATH);
+      const mtime = stat.mtimeMs;
+      if (mtime === cachedAllowlistMtime) {
+        // File unchanged — return cached result
+        return cachedAllowlist;
+      }
+      // File changed — invalidate cache and reload
+      cachedAllowlist = null;
+      allowlistLoadError = null;
+      cachedAllowlistMtime = null;
+    } catch {
+      // File disappeared or unreadable — fall through to reload path
+      cachedAllowlist = null;
+      allowlistLoadError = null;
+      cachedAllowlistMtime = null;
+    }
   }
 
   try {
@@ -97,6 +108,11 @@ export function loadMountAllowlist(): MountAllowlist | null {
     allowlist.blockedPatterns = mergedBlockedPatterns;
 
     cachedAllowlist = allowlist;
+    try {
+      cachedAllowlistMtime = fs.statSync(MOUNT_ALLOWLIST_PATH).mtimeMs;
+    } catch {
+      cachedAllowlistMtime = null;
+    }
     logger.info(
       {
         path: MOUNT_ALLOWLIST_PATH,

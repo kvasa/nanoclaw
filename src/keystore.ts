@@ -36,6 +36,10 @@ export const KEYSTORE_KEYS = new Set([
   'SLACK_BOT_TOKEN',
   'SLACK_APP_TOKEN',
   'OPENAI_API_KEY',
+  'API_TOKEN',
+  'SPOTIFY_REFRESH_TOKEN',
+  'VOICE_USERS',
+  'VOICE_SECRET',
 ]);
 
 /** Returns true if the encrypted store is initialised (master key exists). */

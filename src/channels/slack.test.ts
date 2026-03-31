@@ -82,6 +82,8 @@ vi.mock('@slack/bolt', () => ({
       this.eventHandlers.set(name, handler);
     }
 
+    action(_pattern: any, _handler: any) {}
+
     async start() {}
     async stop() {}
   },
@@ -1275,6 +1277,7 @@ describe('SlackChannel', () => {
         'fetch',
         vi.fn().mockResolvedValue({
           ok: true,
+          headers: { get: () => null },
           arrayBuffer: () => Promise.resolve(new ArrayBuffer(1024)),
         }),
       );

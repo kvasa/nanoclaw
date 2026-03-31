@@ -42,10 +42,12 @@ export async function synthesizeSpeech(
     const openai = new OpenAI({ apiKey });
 
     const response = await openai.audio.speech.create({
-      model: 'tts-1',
+      model: 'gpt-4o-mini-tts',
       voice,
       input: text,
       response_format: 'mp3',
+      // @ts-ignore — instructions supported by gpt-4o-mini-tts
+      instructions: 'Speak naturally in Czech.',
     });
 
     const arrayBuffer = await response.arrayBuffer();

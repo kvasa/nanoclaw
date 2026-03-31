@@ -57,7 +57,7 @@ describe('apply', () => {
       post_apply: [`echo "applied" > "${markerFile}"`],
     });
 
-    const result = await applySkill(skillDir);
+    const result = await applySkill(skillDir, { verified: true });
     expect(result.success).toBe(true);
     expect(fs.existsSync(markerFile)).toBe(true);
     expect(fs.readFileSync(markerFile, 'utf-8').trim()).toBe('applied');
@@ -83,7 +83,7 @@ describe('apply', () => {
       post_apply: ['false'], // always fails
     });
 
-    const result = await applySkill(skillDir);
+    const result = await applySkill(skillDir, { verified: true });
     expect(result.success).toBe(false);
     expect(result.error).toContain('post_apply');
 

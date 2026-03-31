@@ -17,6 +17,35 @@ import { RegisteredGroup } from './types.js';
 
 const MAX_BODY_SIZE = 1024 * 1024; // 1MB
 
+// Rate limiting: max requests per sliding window per IP
+const RATE_LIMIT_MAX = 30;
+const RATE_LIMIT_WINDOW_MS = 60_000;
+const rateLimitMap = new Map<string, { count: number; windowStart: number }>();
+
+function checkRateLimit(ip: string): boolean {
+  const now = Date.now();
+  const entry = rateLimitMap.get(ip);
+  if (!entry || now - entry.windowStart > RATE_LIMIT_WINDOW_MS) {
+    rateLimitMap.set(ip, { count: 1, windowStart: now });
+    return true;
+  }
+  if (entry.count >= RATE_LIMIT_MAX) {
+    return false;
+  }
+  entry.count++;
+  return true;
+}
+
+// Periodically evict expired rate limit entries to prevent unbounded growth
+setInterval(() => {
+  const now = Date.now();
+  for (const [ip, entry] of rateLimitMap) {
+    if (now - entry.windowStart > RATE_LIMIT_WINDOW_MS) {
+      rateLimitMap.delete(ip);
+    }
+  }
+}, RATE_LIMIT_WINDOW_MS).unref();
+
 export interface SlackNotifier {
   /** Post the initial question. Returns a thread anchor ts, or undefined on failure. */
   postQuestion(text: string): Promise<string | undefined>;
@@ -28,6 +57,7 @@ export interface SlackNotifier {
 
 export interface ApiServerConfig {
   port: number;
+  host: string;
   token: string;
   defaultGroupId: string;
   getRegisteredGroups: () => Record<string, RegisteredGroup>;
@@ -83,8 +113,17 @@ function sendSSE(res: ServerResponse, data: object): void {
   res.write(`data: ${JSON.stringify(data)}\n\n`);
 }
 
+function escapeXml(s: string): string {
+  return s
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&apos;');
+}
+
 function formatPrompt(text: string): string {
-  return `<message sender="User" time="${new Date().toISOString()}">${text}</message>`;
+  return `<message sender="User" time="${new Date().toISOString()}">${escapeXml(text)}</message>`;
 }
 
 /**
@@ -95,7 +134,8 @@ function pipeViaIpc(groupFolder: string, prompt: string): boolean {
   const inputDir = path.join(DATA_DIR, 'ipc', groupFolder, 'input');
   try {
     fs.mkdirSync(inputDir, { recursive: true });
-    const filename = `${Date.now()}-${Math.random().toString(36).slice(2, 6)}.json`;
+    fs.chmodSync(inputDir, 0o777);
+    const filename = `${Date.now()}-${crypto.randomBytes(4).toString('hex')}.json`;
     const filepath = path.join(inputDir, filename);
     const tempPath = `${filepath}.tmp`;
     fs.writeFileSync(
@@ -113,18 +153,17 @@ function pipeViaIpc(groupFolder: string, prompt: string): boolean {
 export function startApiServer(config: ApiServerConfig): Promise<Server> {
   return new Promise((resolve, reject) => {
     const server = createServer(async (req, res) => {
-      // CORS preflight
-      if (req.method === 'OPTIONS') {
-        res.writeHead(204, {
-          'Access-Control-Allow-Origin': '*',
-          'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
-          'Access-Control-Allow-Headers': 'Content-Type, Authorization',
-        });
-        res.end();
+      // Auth check (timing-safe comparison to prevent timing attacks)
+      // Reject immediately if no token is configured — empty token would match any "Bearer " request.
+      if (!config.token) {
+        res.writeHead(503, { 'Content-Type': 'application/json' });
+        res.end(
+          JSON.stringify({
+            error: 'API server not configured (missing token)',
+          }),
+        );
         return;
       }
-
-      // Auth check (timing-safe comparison to prevent timing attacks)
       const authHeader = req.headers.authorization ?? '';
       const expected = `Bearer ${config.token}`;
       const isAuthorized =
@@ -133,6 +172,13 @@ export function startApiServer(config: ApiServerConfig): Promise<Server> {
       if (!isAuthorized) {
         res.writeHead(401, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: 'Unauthorized' }));
+        return;
+      }
+
+      const clientIp = req.socket.remoteAddress ?? 'unknown';
+      if (!checkRateLimit(clientIp)) {
+        res.writeHead(429, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Too many requests' }));
         return;
       }
 
@@ -166,6 +212,13 @@ export function startApiServer(config: ApiServerConfig): Promise<Server> {
           return;
         }
 
+        const MAX_TEXT_LENGTH = 100_000;
+        if (parsed.text.length > MAX_TEXT_LENGTH) {
+          res.writeHead(400, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'text exceeds maximum length' }));
+          return;
+        }
+
         // Fall back to default group when groupId is not provided
         const groupId = parsed.groupId || config.defaultGroupId;
 
@@ -188,7 +241,6 @@ export function startApiServer(config: ApiServerConfig): Promise<Server> {
           'Content-Type': 'text/event-stream',
           'Cache-Control': 'no-cache',
           Connection: 'keep-alive',
-          'Access-Control-Allow-Origin': '*',
         });
 
         const prompt = formatPrompt(parsed.text);
@@ -366,8 +418,11 @@ export function startApiServer(config: ApiServerConfig): Promise<Server> {
       }
     });
 
-    server.listen(config.port, () => {
-      logger.info({ port: config.port }, 'API server started');
+    server.listen(config.port, config.host, () => {
+      logger.info(
+        { port: config.port, host: config.host },
+        'API server started',
+      );
       resolve(server);
     });
 

@@ -10,6 +10,7 @@
  *             Proxy injects real OAuth token on that exchange request;
  *             subsequent requests carry the temp key which is valid as-is.
  */
+import crypto from 'crypto';
 import { createServer, Server } from 'http';
 import { request as httpsRequest } from 'https';
 import { request as httpRequest, RequestOptions } from 'http';
@@ -17,6 +18,37 @@ import { request as httpRequest, RequestOptions } from 'http';
 import { readEnvFile } from './env.js';
 import { logger } from './logger.js';
 import { NANOCLAW_CREDS_TOKEN } from './creds-token.js';
+
+// Rate limiting for /mcp-creds: max 20 requests per minute per IP
+const MCP_CREDS_RATE_LIMIT_MAX = 20;
+const MCP_CREDS_RATE_LIMIT_WINDOW_MS = 60_000;
+const mcpCredsRateMap = new Map<
+  string,
+  { count: number; windowStart: number }
+>();
+
+function checkMcpCredsRateLimit(ip: string): boolean {
+  const now = Date.now();
+  const entry = mcpCredsRateMap.get(ip);
+  if (!entry || now - entry.windowStart > MCP_CREDS_RATE_LIMIT_WINDOW_MS) {
+    mcpCredsRateMap.set(ip, { count: 1, windowStart: now });
+    return true;
+  }
+  if (entry.count >= MCP_CREDS_RATE_LIMIT_MAX) {
+    return false;
+  }
+  entry.count++;
+  return true;
+}
+
+setInterval(() => {
+  const now = Date.now();
+  for (const [ip, entry] of mcpCredsRateMap) {
+    if (now - entry.windowStart > MCP_CREDS_RATE_LIMIT_WINDOW_MS) {
+      mcpCredsRateMap.delete(ip);
+    }
+  }
+}, MCP_CREDS_RATE_LIMIT_WINDOW_MS).unref();
 
 export type AuthMode = 'api-key' | 'oauth';
 
@@ -58,8 +90,18 @@ export function startCredentialProxy(
       // Serve MCP credentials to containers so they are never passed as docker -e flags.
       // Token auth prevents rogue processes on the docker bridge from reading credentials.
       if (req.method === 'GET' && req.url === '/mcp-creds') {
-        const auth = req.headers['authorization'];
-        if (!auth || auth !== `Bearer ${NANOCLAW_CREDS_TOKEN}`) {
+        const clientIp = req.socket.remoteAddress ?? 'unknown';
+        if (!checkMcpCredsRateLimit(clientIp)) {
+          res.writeHead(429, { 'Content-Type': 'text/plain' });
+          res.end('Too Many Requests');
+          return;
+        }
+        const auth = req.headers['authorization'] ?? '';
+        const expected = `Bearer ${NANOCLAW_CREDS_TOKEN}`;
+        const isAuthorized =
+          auth.length === expected.length &&
+          crypto.timingSafeEqual(Buffer.from(auth), Buffer.from(expected));
+        if (!isAuthorized) {
           res.writeHead(401, { 'Content-Type': 'text/plain' });
           res.end('Unauthorized');
           return;
@@ -103,11 +145,12 @@ export function startCredentialProxy(
           delete headers['x-api-key'];
           headers['x-api-key'] = secrets.ANTHROPIC_API_KEY;
         } else {
-          // OAuth mode: replace placeholder Bearer token with the real one
-          // only when the container actually sends an Authorization header
-          // (exchange request + auth probes). Post-exchange requests use
-          // x-api-key only, so they pass through without token injection.
-          if (headers['authorization']) {
+          // OAuth mode: replace placeholder Bearer token with the real one,
+          // but ONLY when the container sends the expected placeholder value.
+          // This prevents a compromised container from injecting arbitrary
+          // authorization headers to obtain the real OAuth token.
+          const authValue = headers['authorization'];
+          if (authValue === 'Bearer placeholder') {
             delete headers['authorization'];
             if (oauthToken) {
               headers['authorization'] = `Bearer ${oauthToken}`;

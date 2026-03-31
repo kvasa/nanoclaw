@@ -56,6 +56,7 @@ export {
 } from './structured.js';
 export type {
   AppliedSkill,
+  ApplyOptions,
   ApplyResult,
   CustomModification,
   FileOpsResult,

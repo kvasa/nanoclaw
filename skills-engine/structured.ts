@@ -194,7 +194,9 @@ export function mergeDockerComposeServices(
 }
 
 export function runNpmInstall(): void {
-  execSync('npm install --legacy-peer-deps', {
+  // --ignore-scripts prevents postinstall hooks in dependencies from executing
+  // arbitrary code. Skill packages are not trusted to run lifecycle scripts.
+  execSync('npm install --legacy-peer-deps --ignore-scripts', {
     stdio: 'inherit',
     cwd: process.cwd(),
   });

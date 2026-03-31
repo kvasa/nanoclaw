@@ -40,6 +40,15 @@ export interface AppliedSkill {
   custom_patch_description?: string;
 }
 
+export interface ApplyOptions {
+  /**
+   * Whether the skill package was verified with a valid Ed25519 signature.
+   * When false (default), post_apply commands and test commands are skipped
+   * as a security measure — they can execute arbitrary code on the host.
+   */
+  verified?: boolean;
+}
+
 export interface ApplyResult {
   success: boolean;
   skill: string;

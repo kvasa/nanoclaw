@@ -38,6 +38,8 @@ const SENSITIVE_KEYS = [
   'SLACK_BOT_TOKEN',
   'SLACK_APP_TOKEN',
   'OPENAI_API_KEY',
+  'API_TOKEN',
+  'SPOTIFY_REFRESH_TOKEN',
 ];
 
 // ── Crypto ────────────────────────────────────────────────────────────────────

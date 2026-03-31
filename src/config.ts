@@ -1,3 +1,4 @@
+import os from 'os';
 import path from 'path';
 
 import { readEnvFile } from './env.js';
@@ -11,6 +12,7 @@ const envConfig = readEnvFile([
   'LOG_LEVEL',
   'API_TOKEN',
   'API_PORT',
+  'API_HOST',
   'API_GROUP_ID',
   'API_SLACK_CHANNEL_ID',
   'GMAIL_ALLOWED_SENDERS',
@@ -31,7 +33,7 @@ export const SCHEDULER_POLL_INTERVAL = 60000;
 
 // Absolute paths needed for container mounts
 const PROJECT_ROOT = process.cwd();
-const HOME_DIR = process.env.HOME || '/Users/user';
+const HOME_DIR = process.env.HOME || os.homedir();
 
 // Mount security: allowlist stored OUTSIDE project root, never mounted into containers
 export const MOUNT_ALLOWLIST_PATH = path.join(
@@ -71,6 +73,10 @@ export const API_PORT = parseInt(
   process.env.API_PORT || envConfig.API_PORT || '3002',
   10,
 );
+// Bind API server to localhost by default — must be behind a reverse proxy (nginx).
+// Set API_HOST=0.0.0.0 only if you explicitly need external access.
+export const API_HOST =
+  process.env.API_HOST || envConfig.API_HOST || '127.0.0.1';
 export const API_TOKEN = process.env.API_TOKEN || envConfig.API_TOKEN || '';
 export const API_GROUP_ID =
   process.env.API_GROUP_ID || envConfig.API_GROUP_ID || 'assistant';

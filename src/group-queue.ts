@@ -1,13 +1,9 @@
 import { ChildProcess } from 'child_process';
+import crypto from 'crypto';
 import fs from 'fs';
 import path from 'path';
 
-import {
-  BASE_RETRY_MS,
-  DATA_DIR,
-  MAX_CONCURRENT_CONTAINERS,
-  MAX_RETRIES,
-} from './config.js';
+import { DATA_DIR, MAX_CONCURRENT_CONTAINERS } from './config.js';
 import { logger } from './logger.js';
 
 interface QueuedTask {
@@ -15,6 +11,9 @@ interface QueuedTask {
   groupJid: string;
   fn: () => Promise<void>;
 }
+
+const MAX_RETRIES = 5;
+const BASE_RETRY_MS = 5000;
 
 interface GroupState {
   active: boolean;
@@ -168,14 +167,13 @@ export class GroupQueue {
     const inputDir = path.join(DATA_DIR, 'ipc', state.groupFolder, 'input');
     try {
       fs.mkdirSync(inputDir, { recursive: true });
-      const filename = `${Date.now()}-${Math.random().toString(36).slice(2, 6)}.json`;
+      const filename = `${Date.now()}-${crypto.randomBytes(4).toString('hex')}.json`;
       const filepath = path.join(inputDir, filename);
       const tempPath = `${filepath}.tmp`;
       fs.writeFileSync(tempPath, JSON.stringify({ type: 'message', text }));
       fs.renameSync(tempPath, filepath);
       return true;
-    } catch (err) {
-      logger.debug({ groupJid, err }, 'Failed to write IPC message');
+    } catch {
       return false;
     }
   }
@@ -211,8 +209,8 @@ export class GroupQueue {
     try {
       fs.mkdirSync(inputDir, { recursive: true });
       fs.writeFileSync(path.join(inputDir, '_close'), '');
-    } catch (err) {
-      logger.debug({ groupJid, err }, 'Failed to write close sentinel');
+    } catch {
+      // ignore
     }
   }
 
@@ -374,7 +372,7 @@ export class GroupQueue {
     // via idle timeout or container timeout. The --rm flag cleans them up on exit.
     // This prevents WhatsApp reconnection restarts from killing working agents.
     const activeContainers: string[] = [];
-    for (const [jid, state] of this.groups) {
+    for (const [_jid, state] of this.groups) {
       if (state.process && !state.process.killed && state.containerName) {
         activeContainers.push(state.containerName);
       }

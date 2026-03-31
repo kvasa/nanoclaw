@@ -26,6 +26,7 @@ const TEST_PORT = 0; // Let OS pick a free port
 function makeConfig(overrides?: Partial<ApiServerConfig>): ApiServerConfig {
   return {
     port: TEST_PORT,
+    host: '127.0.0.1',
     token: TEST_TOKEN,
     defaultGroupId: 'test-group',
     getRegisteredGroups: () => ({

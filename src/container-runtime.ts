@@ -2,7 +2,7 @@
  * Container runtime abstraction for NanoClaw.
  * All runtime-specific logic lives here so swapping runtimes means changing one file.
  */
-import { execFileSync, execSync } from 'child_process';
+import { execFileSync } from 'child_process';
 import fs from 'fs';
 import os from 'os';
 
@@ -28,6 +28,27 @@ export const PROXY_BIND_HOST =
   envConfig.CREDENTIAL_PROXY_HOST ||
   detectProxyBindHost();
 
+/** Returns true when the Docker socket points to a rootless daemon. */
+export function isRootlessDocker(): boolean {
+  return (process.env.DOCKER_HOST ?? '').includes('/run/user/');
+}
+
+/**
+ * For rootless Docker, find the host's first external (non-loopback, non-docker) IPv4.
+ * Containers reach the host via slirp4netns NAT on this interface.
+ */
+function detectHostExternalIP(): string | null {
+  const ifaces = os.networkInterfaces();
+  for (const [name, addrs] of Object.entries(ifaces)) {
+    if (!addrs) continue;
+    if (name === 'lo' || name.startsWith('docker') || name.startsWith('veth'))
+      continue;
+    const ipv4 = addrs.find((a) => a.family === 'IPv4' && !a.internal);
+    if (ipv4) return ipv4.address;
+  }
+  return null;
+}
+
 function detectProxyBindHost(): string {
   if (os.platform() === 'darwin') return '127.0.0.1';
 
@@ -35,7 +56,19 @@ function detectProxyBindHost(): string {
   // Check /proc filesystem, not env vars — WSL_DISTRO_NAME isn't set under systemd.
   if (fs.existsSync('/proc/sys/fs/binfmt_misc/WSLInterop')) return '127.0.0.1';
 
-  // Bare-metal Linux: bind to the docker0 bridge IP instead of 0.0.0.0
+  if (isRootlessDocker()) {
+    // Rootless Docker runs in a separate network namespace (slirp4netns).
+    // Containers can only reach the host via its external interface, not docker0.
+    const hostIP = detectHostExternalIP();
+    if (hostIP) return hostIP;
+    console.warn(
+      '[nanoclaw] WARNING: Could not detect host external IP for rootless Docker. ' +
+        'Set CREDENTIAL_PROXY_HOST to your external IP, e.g.: CREDENTIAL_PROXY_HOST=203.0.113.1',
+    );
+    return '0.0.0.0';
+  }
+
+  // Root Docker: bind to the docker0 bridge IP instead of 0.0.0.0
   const ifaces = os.networkInterfaces();
   const docker0 = ifaces['docker0'];
   if (docker0) {
@@ -54,8 +87,14 @@ function detectProxyBindHost(): string {
 
 /** CLI args needed for the container to resolve the host gateway. */
 export function hostGatewayArgs(): string[] {
-  // On Linux, host.docker.internal isn't built-in — add it explicitly
+  // On Linux, host.docker.internal isn't built-in — add it explicitly.
   if (os.platform() === 'linux') {
+    if (isRootlessDocker()) {
+      // In rootless Docker, `host-gateway` resolves to the rootlesskit bridge (172.17.0.1),
+      // not the actual host. Use PROXY_BIND_HOST directly so containers can reach the host
+      // via slirp4netns through the external interface.
+      return [`--add-host=host.docker.internal:${PROXY_BIND_HOST}`];
+    }
     return ['--add-host=host.docker.internal:host-gateway'];
   }
   return [];
@@ -74,15 +113,10 @@ export function stopContainerArgs(name: string): string[] {
   return [CONTAINER_RUNTIME_BIN, 'stop', name];
 }
 
-/** Returns the shell command to stop a container by name. */
-export function stopContainer(name: string): string {
-  return `${CONTAINER_RUNTIME_BIN} stop "${name}"`;
-}
-
 /** Ensure the container runtime is running, starting it if needed. */
 export function ensureContainerRuntimeRunning(): void {
   try {
-    execSync(`${CONTAINER_RUNTIME_BIN} info`, {
+    execFileSync(CONTAINER_RUNTIME_BIN, ['info'], {
       stdio: 'pipe',
       timeout: 10000,
     });
@@ -113,15 +147,18 @@ export function ensureContainerRuntimeRunning(): void {
     console.error(
       '╚════════════════════════════════════════════════════════════════╝\n',
     );
-    throw new Error('Container runtime is required but failed to start');
+    throw new Error('Container runtime is required but failed to start', {
+      cause: err,
+    });
   }
 }
 
 /** Kill orphaned NanoClaw containers from previous runs. */
 export function cleanupOrphans(): void {
   try {
-    const output = execSync(
-      `${CONTAINER_RUNTIME_BIN} ps --filter name=nanoclaw- --format '{{.Names}}'`,
+    const output = execFileSync(
+      CONTAINER_RUNTIME_BIN,
+      ['ps', '--filter', 'name=nanoclaw-', '--format', '{{.Names}}'],
       { stdio: ['pipe', 'pipe', 'pipe'], encoding: 'utf-8' },
     );
     const orphans = output.trim().split('\n').filter(Boolean);

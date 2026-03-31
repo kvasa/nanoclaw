@@ -102,12 +102,19 @@ export interface Channel {
   disconnect(): Promise<void>;
   // Optional: typing indicator. Channels that support it implement it.
   setTyping?(jid: string, isTyping: boolean): Promise<void>;
-  // Optional: add emoji reaction to a message (e.g. Slack reactions.add)
-  addReaction?(jid: string, messageId: string, emoji: string): Promise<void>;
-  // Optional: remove emoji reaction from a message (e.g. Slack reactions.remove)
-  removeReaction?(jid: string, messageId: string, emoji: string): Promise<void>;
   // Optional: sync group/chat names from the platform.
   syncGroups?(force: boolean): Promise<void>;
+  // Optional: send a file to a chat.
+  sendFile?(
+    jid: string,
+    filePath: string,
+    options?: SendFileOptions,
+  ): Promise<void>;
+  // Optional: send a voice message.
+  sendVoice?(jid: string, audioBuffer: Buffer, caption?: string): Promise<void>;
+  // Optional: reaction support.
+  addReaction?(jid: string, messageId: string, emoji: string): Promise<void>;
+  removeReaction?(jid: string, messageId: string, emoji: string): Promise<void>;
 }
 
 export interface CachedEmail {

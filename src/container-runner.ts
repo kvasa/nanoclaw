@@ -2,7 +2,8 @@
  * Container Runner for NanoClaw
  * Spawns agent execution in containers and handles IPC
  */
-import { ChildProcess, execFile, spawn } from 'child_process';
+import { ChildProcess, execFile, execFileSync, spawn } from 'child_process';
+import crypto from 'crypto';
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
@@ -25,6 +26,7 @@ import {
   CONTAINER_HOST_GATEWAY,
   CONTAINER_RUNTIME_BIN,
   hostGatewayArgs,
+  isRootlessDocker,
   readonlyMountArgs,
   stopContainerArgs,
 } from './container-runtime.js';
@@ -98,13 +100,69 @@ interface VolumeMount {
   readonly: boolean;
 }
 
+/**
+ * Returns the host UID that corresponds to container uid 1000 (node user)
+ * in rootless Docker's user namespace mapping.
+ *
+ * Rootless Docker maps:
+ *   container uid 0   → host uid of the user running dockerd (current process uid)
+ *   container uid N>0 → host uid = subuid_start + N - 1
+ *
+ * If subuid mapping is not found, returns null (caller falls back to chmod 777).
+ */
+function containerNodeHostUid(): number | null {
+  const currentUid = process.getuid?.();
+  if (currentUid == null) return null;
+  // If we're running as uid 1000, container uid 1000 (node) = different host uid via subuid
+  // If we're running as any other uid, container already runs as our uid (see --user flag logic)
+  // and no special mapping is needed.
+  try {
+    const username = os.userInfo().username;
+    const subuid = fs.readFileSync('/etc/subuid', 'utf8');
+    for (const line of subuid.split('\n')) {
+      const [user, start, count] = line.split(':');
+      if (user === username || user === String(currentUid)) {
+        const startUid = parseInt(start, 10);
+        const countN = parseInt(count, 10);
+        if (!isNaN(startUid) && !isNaN(countN)) {
+          // container uid 1000 → host uid = start + 1000 - 1
+          const mappedUid = startUid + 1000 - 1;
+          return mappedUid;
+        }
+      }
+    }
+  } catch {
+    // /etc/subuid not available (root Docker or non-Linux)
+  }
+  return null;
+}
+
+/** Grant rwx to a specific UID via POSIX ACL; fall back to chmod 777 if unavailable. */
+function secureMkdir(dirPath: string): void {
+  fs.mkdirSync(dirPath, { recursive: true });
+  const mappedUid = containerNodeHostUid();
+  if (mappedUid != null) {
+    try {
+      // chmod first: sets base permissions (group bits also set the ACL mask).
+      // setfacl after: adding named user entry recalculates mask to include rwx.
+      fs.chmodSync(dirPath, 0o750);
+      execFileSync('setfacl', ['-m', `u:${mappedUid}:rwx`, dirPath], {
+        stdio: 'pipe',
+      });
+      return;
+    } catch {
+      // setfacl not available — fall through to world-writable
+    }
+  }
+  fs.chmodSync(dirPath, 0o777);
+}
+
 function buildVolumeMounts(
   group: RegisteredGroup,
   isMain: boolean,
 ): VolumeMount[] {
   const mounts: VolumeMount[] = [];
   const projectRoot = process.cwd();
-  const homeDir = os.homedir();
   const groupDir = resolveGroupFolderPath(group.folder);
 
   if (isMain) {
@@ -164,7 +222,10 @@ function buildVolumeMounts(
     group.folder,
     '.claude',
   );
-  fs.mkdirSync(groupSessionsDir, { recursive: true });
+  // mode 0o777: in rootless Docker, container uid 1000 (node) maps to a different host uid
+  // than the owner (honza). World-writable lets the container write session files.
+  fs.mkdirSync(groupSessionsDir, { recursive: true, mode: 0o777 });
+  fs.chmodSync(groupSessionsDir, 0o777);
   const settingsFile = path.join(groupSessionsDir, 'settings.json');
   if (!fs.existsSync(settingsFile)) {
     fs.writeFileSync(
@@ -214,9 +275,9 @@ function buildVolumeMounts(
   // Per-group IPC namespace: each group gets its own IPC directory
   // This prevents cross-group privilege escalation via IPC
   const groupIpcDir = resolveGroupIpcPath(group.folder);
-  fs.mkdirSync(path.join(groupIpcDir, 'messages'), { recursive: true });
-  fs.mkdirSync(path.join(groupIpcDir, 'tasks'), { recursive: true });
-  fs.mkdirSync(path.join(groupIpcDir, 'input'), { recursive: true });
+  secureMkdir(path.join(groupIpcDir, 'messages'));
+  secureMkdir(path.join(groupIpcDir, 'tasks'));
+  secureMkdir(path.join(groupIpcDir, 'input'));
   mounts.push({
     hostPath: groupIpcDir,
     containerPath: '/workspace/ipc',
@@ -246,16 +307,6 @@ function buildVolumeMounts(
     containerPath: '/app/src',
     readonly: false,
   });
-
-  // Backups directory (read-only for all agents)
-  const backupsDir = path.join(projectRoot, 'backups');
-  if (fs.existsSync(backupsDir)) {
-    mounts.push({
-      hostPath: backupsDir,
-      containerPath: '/workspace/backups',
-      readonly: true,
-    });
-  }
 
   // Additional mounts validated against external allowlist (tamper-proof from containers)
   if (group.containerConfig?.additionalMounts) {
@@ -329,21 +380,13 @@ function buildContainerArgs(
     }
   }
 
-  // Apple Calendar MCP credentials (only when calendar is enabled)
-  if (enabledMcpServers?.includes('calendar')) {
-    const appleId = process.env.APPLE_ID || agentConfig.APPLE_ID;
-    const applePass =
-      process.env.APPLE_APP_PASSWORD || agentConfig.APPLE_APP_PASSWORD;
-    if (appleId) args.push('-e', `APPLE_ID=${appleId}`);
-    if (applePass) args.push('-e', `APPLE_APP_PASSWORD=${applePass}`);
-    const caldavUrl =
-      process.env.CALDAV_BASE_URL || agentConfig.CALDAV_BASE_URL;
-    if (caldavUrl) args.push('-e', `CALDAV_BASE_URL=${caldavUrl}`);
-  }
+  // Apple Calendar MCP credentials are NOT passed as -e flags here —
+  // they would be visible via `docker inspect`. They are already included
+  // in the /mcp-creds response and exported by entrypoint.sh at startup.
 
   // Run as host user so bind-mounted files are accessible.
-  // Skip when running as root (uid 0), as the container's node user (uid 1000),
-  // or when getuid is unavailable (native Windows without WSL).
+  // In rootless Docker, container uid 0 = host user — bind mounts work correctly.
+  // In root Docker, skip when already uid 0 or uid 1000 (matches container's node user).
   const hostUid = process.getuid?.();
   const hostGid = process.getgid?.();
   if (hostUid != null && hostUid !== 0 && hostUid !== 1000) {
@@ -378,7 +421,7 @@ export async function runContainerAgent(
 
   const mounts = buildVolumeMounts(group, input.isMain);
   const safeName = group.folder.replace(/[^a-zA-Z0-9-]/g, '-');
-  const containerName = `nanoclaw-${safeName}-${Date.now()}`;
+  const containerName = `nanoclaw-${safeName}-${crypto.randomBytes(8).toString('hex')}`;
   const containerArgs = buildContainerArgs(
     mounts,
     containerName,
@@ -389,13 +432,21 @@ export async function runContainerAgent(
   // The agent-runner MCP reads this env var and includes it in IPC messages
   // so the host can reply in the correct thread.
   if (input.triggerMessageTs) {
+    // Validate: Slack thread timestamps are Unix timestamps with microseconds (e.g. "1234567890.123456")
+    const SLACK_TS_PATTERN = /^\d{10}\.\d{1,6}$/;
+    if (!SLACK_TS_PATTERN.test(input.triggerMessageTs)) {
+      throw new Error(
+        `Invalid triggerMessageTs format: ${input.triggerMessageTs}`,
+      );
+    }
+    const sanitizedTs = input.triggerMessageTs;
     // Insert env args before the image name (last element)
     const imageIdx = containerArgs.lastIndexOf(CONTAINER_IMAGE);
     containerArgs.splice(
       imageIdx,
       0,
       '-e',
-      `NANOCLAW_THREAD_TS=${input.triggerMessageTs}`,
+      `NANOCLAW_THREAD_TS=${sanitizedTs}`,
     );
   }
 
@@ -519,7 +570,7 @@ export async function runContainerAgent(
           parseBuffer = parseBuffer.slice(endIdx + OUTPUT_END_MARKER.length);
 
           try {
-            const parsed = ContainerOutputSchema.parse(JSON.parse(jsonStr));
+            const parsed: ContainerOutput = JSON.parse(jsonStr);
             if (parsed.newSessionId) {
               newSessionId = parsed.newSessionId;
             }
@@ -601,26 +652,18 @@ export async function runContainerAgent(
       if (timedOut) {
         const ts = new Date().toISOString().replace(/[:.]/g, '-');
         const timeoutLog = path.join(logsDir, `container-${ts}.log`);
-        try {
-          fs.mkdirSync(logsDir, { recursive: true });
-          fs.writeFileSync(
-            timeoutLog,
-            [
-              `=== Container Run Log (TIMEOUT) ===`,
-              `Timestamp: ${new Date().toISOString()}`,
-              `Group: ${group.name}`,
-              `Container: ${containerName}`,
-              `Duration: ${duration}ms`,
-              `Exit Code: ${code}`,
-              `Had Streaming Output: ${hadStreamingOutput}`,
-            ].join('\n'),
-          );
-        } catch (err) {
-          logger.error(
-            { err, group: group.name, logFile: timeoutLog },
-            'Failed to write container log',
-          );
-        }
+        fs.writeFileSync(
+          timeoutLog,
+          [
+            `=== Container Run Log (TIMEOUT) ===`,
+            `Timestamp: ${new Date().toISOString()}`,
+            `Group: ${group.name}`,
+            `Container: ${containerName}`,
+            `Duration: ${duration}ms`,
+            `Exit Code: ${code}`,
+            `Had Streaming Output: ${hadStreamingOutput}`,
+          ].join('\n'),
+        );
 
         // Timeout after output = idle cleanup, not failure.
         // The agent already sent its response; this is just the
@@ -655,41 +698,71 @@ export async function runContainerAgent(
 
       const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
       const logFile = path.join(logsDir, `container-${timestamp}.log`);
+      const isVerbose =
+        process.env.LOG_LEVEL === 'debug' || process.env.LOG_LEVEL === 'trace';
 
       const logLines = [
         `=== Container Run Log ===`,
         `Timestamp: ${new Date().toISOString()}`,
         `Group: ${group.name}`,
+        `IsMain: ${input.isMain}`,
         `Duration: ${duration}ms`,
         `Exit Code: ${code}`,
+        `Stdout Truncated: ${stdoutTruncated}`,
+        `Stderr Truncated: ${stderrTruncated}`,
         ``,
       ];
 
       const isError = code !== 0;
 
-      if (isError) {
-        logLines.push(`=== Input ===`, JSON.stringify(input, null, 2), ``);
-      }
-
-      // Agent-runner stderr contains the LLM communication logs
-      if (stderr.trim()) {
+      if (isVerbose || isError) {
+        // On error, log input metadata only — not the full prompt.
+        // Full input is only included at verbose level to avoid
+        // persisting user conversation content on every non-zero exit.
+        if (isVerbose) {
+          logLines.push(`=== Input ===`, JSON.stringify(input, null, 2), ``);
+        } else {
+          logLines.push(
+            `=== Input Summary ===`,
+            `Prompt length: ${input.prompt.length} chars`,
+            `Session ID: ${input.sessionId || 'new'}`,
+            ``,
+          );
+        }
         logLines.push(
-          `=== Agent Log${stderrTruncated ? ' (TRUNCATED)' : ''} ===`,
+          `=== Container Args ===`,
+          containerArgs.join(' '),
+          ``,
+          `=== Mounts ===`,
+          mounts
+            .map(
+              (m) =>
+                `${m.hostPath} -> ${m.containerPath}${m.readonly ? ' (ro)' : ''}`,
+            )
+            .join('\n'),
+          ``,
+          `=== Stderr${stderrTruncated ? ' (TRUNCATED)' : ''} ===`,
           stderr,
+          ``,
+          `=== Stdout${stdoutTruncated ? ' (TRUNCATED)' : ''} ===`,
+          stdout,
+        );
+      } else {
+        logLines.push(
+          `=== Input Summary ===`,
+          `Prompt length: ${input.prompt.length} chars`,
+          `Session ID: ${input.sessionId || 'new'}`,
+          ``,
+          `=== Mounts ===`,
+          mounts
+            .map((m) => `${m.containerPath}${m.readonly ? ' (ro)' : ''}`)
+            .join('\n'),
           ``,
         );
       }
 
-      try {
-        fs.mkdirSync(logsDir, { recursive: true });
-        fs.writeFileSync(logFile, logLines.join('\n'));
-        logger.debug({ logFile }, 'Container log written');
-      } catch (err) {
-        logger.error(
-          { err, group: group.name, logFile },
-          'Failed to write container log',
-        );
-      }
+      fs.writeFileSync(logFile, logLines.join('\n'));
+      logger.debug({ logFile, verbose: isVerbose }, 'Container log written');
 
       if (code !== 0) {
         logger.error(
@@ -745,7 +818,7 @@ export async function runContainerAgent(
           jsonLine = lines[lines.length - 1];
         }
 
-        const output = ContainerOutputSchema.parse(JSON.parse(jsonLine));
+        const output: ContainerOutput = JSON.parse(jsonLine);
 
         logger.info(
           {
@@ -844,7 +917,7 @@ export function writeGroupsSnapshot(
   groupFolder: string,
   isMain: boolean,
   groups: AvailableGroup[],
-  registeredJids: Set<string>,
+  _registeredJids: Set<string>,
 ): void {
   const groupIpcDir = resolveGroupIpcPath(groupFolder);
   fs.mkdirSync(groupIpcDir, { recursive: true });

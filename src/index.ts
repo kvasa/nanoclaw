@@ -3,6 +3,7 @@ import path from 'path';
 
 import {
   API_GROUP_ID,
+  API_HOST,
   API_PORT,
   API_SLACK_CHANNEL_ID,
   API_TOKEN,
@@ -15,6 +16,7 @@ import {
   TRIGGER_PATTERN,
 } from './config.js';
 import { startApiServer, SlackNotifier } from './api-server.js';
+import { startVoiceServer } from './voice-server.js';
 import { startCredentialProxy } from './credential-proxy.js';
 import './channels/index.js';
 import {
@@ -43,7 +45,6 @@ import {
   getAllTasks,
   getMessagesSince,
   getNewMessages,
-  getRegisteredGroup,
   getRouterState,
   initDatabase,
   setRegisteredGroup,
@@ -53,9 +54,14 @@ import {
   storeMessage,
 } from './db.js';
 import { GroupQueue } from './group-queue.js';
-import { startIpcWatcher } from './ipc.js';
 import { resolveGroupFolderPath } from './group-folder.js';
+import { startIpcWatcher } from './ipc.js';
 import { findChannel, formatMessages, formatOutbound } from './router.js';
+import {
+  restoreRemoteControl,
+  startRemoteControl,
+  stopRemoteControl,
+} from './remote-control.js';
 import {
   isSenderAllowed,
   isTriggerAllowed,
@@ -84,6 +90,7 @@ let gmailChannel: GmailChannel | undefined;
 
 const channels: Channel[] = [];
 const queue = new GroupQueue();
+const pipedReactions = new Map<string, ReactionTracker>();
 
 // In-memory store for the latest user message threadTs per chatJid.
 // threadTs is ephemeral (not persisted in DB) and used for Slack thread replies.
@@ -138,11 +145,21 @@ function saveState(chatJid?: string): void {
 }
 
 function registerGroup(jid: string, group: RegisteredGroup): void {
+  let groupDir: string;
+  try {
+    groupDir = resolveGroupFolderPath(group.folder);
+  } catch (err) {
+    logger.warn(
+      { jid, folder: group.folder, err },
+      'Rejecting group registration with invalid folder',
+    );
+    return;
+  }
+
   registeredGroups[jid] = group;
   setRegisteredGroup(jid, group);
 
   // Create group folder
-  const groupDir = path.join(DATA_DIR, '..', 'groups', group.folder);
   fs.mkdirSync(path.join(groupDir, 'logs'), { recursive: true });
 
   logger.info(
@@ -320,13 +337,21 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
           outputSentToUser = true;
         }
         await reaction.finalize('white_check_mark');
+        await pipedReactions.get(chatJid)?.finalize('white_check_mark');
+        pipedReactions.delete(chatJid);
         // Only reset idle timer on actual results, not session-update markers (result: null)
         resetIdleTimer();
+      }
+
+      if (result.status === 'success') {
+        queue.notifyIdle(chatJid);
       }
 
       if (result.status === 'error') {
         hadError = true;
         await reaction.finalize('warning');
+        await pipedReactions.get(chatJid)?.finalize('warning');
+        pipedReactions.delete(chatJid);
       }
     },
   );
@@ -335,9 +360,11 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
   if (idleTimer) clearTimeout(idleTimer);
 
   // Fallback: if no streaming callback fired (e.g. container crashed), finalize reaction
-  await reaction.finalize(
-    output === 'error' || hadError ? 'warning' : 'white_check_mark',
-  );
+  const finalEmoji =
+    output === 'error' || hadError ? 'warning' : 'white_check_mark';
+  await reaction.finalize(finalEmoji);
+  await pipedReactions.get(chatJid)?.finalize(finalEmoji);
+  pipedReactions.delete(chatJid);
 
   if (output === 'error' || hadError) {
     // If we already sent output to the user, don't roll back the cursor —
@@ -595,10 +622,15 @@ async function startMessageLoop(): Promise<void> {
             // Show typing indicator while the container processes the piped message
             channel.setTyping?.(chatJid, true);
             const pipedMsgId = findLastUserMessageId(messagesToSend);
-            if (pipedMsgId)
-              channel
-                .addReaction?.(chatJid, pipedMsgId, 'eyes')
-                .catch(() => {});
+            if (pipedMsgId) {
+              const pipedReaction = new ReactionTracker(
+                channel,
+                chatJid,
+                pipedMsgId,
+              );
+              pipedReactions.set(chatJid, pipedReaction);
+              pipedReaction.start().catch(() => {});
+            }
           } else {
             // No active container — enqueue for a new one
             queue.enqueueMessageCheck(chatJid);
@@ -640,6 +672,7 @@ async function main(): Promise<void> {
   initDatabase();
   logger.info('Database initialized');
   loadState();
+  restoreRemoteControl();
 
   // Start credential proxy (containers route API calls through this)
   const proxyServer = await startCredentialProxy(
@@ -662,9 +695,60 @@ async function main(): Promise<void> {
   process.on('SIGTERM', () => shutdown('SIGTERM'));
   process.on('SIGINT', () => shutdown('SIGINT'));
 
+  // Handle /remote-control and /remote-control-end commands
+  async function handleRemoteControl(
+    command: string,
+    chatJid: string,
+    msg: NewMessage,
+  ): Promise<void> {
+    const group = registeredGroups[chatJid];
+    if (!group?.isMain) {
+      logger.warn(
+        { chatJid, sender: msg.sender },
+        'Remote control rejected: not main group',
+      );
+      return;
+    }
+
+    const channel = findChannel(channels, chatJid);
+    if (!channel) return;
+
+    if (command === '/remote-control') {
+      const result = await startRemoteControl(
+        msg.sender,
+        chatJid,
+        process.cwd(),
+      );
+      if (result.ok) {
+        await channel.sendMessage(chatJid, result.url);
+      } else {
+        await channel.sendMessage(
+          chatJid,
+          `Remote Control failed: ${result.error}`,
+        );
+      }
+    } else {
+      const result = stopRemoteControl();
+      if (result.ok) {
+        await channel.sendMessage(chatJid, 'Remote Control session ended.');
+      } else {
+        await channel.sendMessage(chatJid, result.error);
+      }
+    }
+  }
+
   // Channel callbacks (shared by all channels)
   const channelOpts = {
     onMessage: (chatJid: string, msg: NewMessage) => {
+      // Remote control commands — intercept before storage
+      const trimmed = msg.content.trim();
+      if (trimmed === '/remote-control' || trimmed === '/remote-control-end') {
+        handleRemoteControl(trimmed, chatJid, msg).catch((err) =>
+          logger.error({ err, chatJid }, 'Remote control command error'),
+        );
+        return;
+      }
+
       // Sender allowlist drop mode: discard messages from denied senders before storing
       if (!msg.is_from_me && !msg.is_bot_message && registeredGroups[chatJid]) {
         const cfg = loadSenderAllowlist();
@@ -811,6 +895,7 @@ async function main(): Promise<void> {
 
     apiServer = await startApiServer({
       port: API_PORT,
+      host: API_HOST,
       token: API_TOKEN,
       defaultGroupId: API_GROUP_ID,
       getRegisteredGroups: () => registeredGroups,
@@ -822,6 +907,8 @@ async function main(): Promise<void> {
       slackNotifier,
     });
   }
+
+  startVoiceServer();
 
   // Start subsystems (independently of connection handler)
   startSchedulerLoop({
@@ -926,10 +1013,28 @@ async function main(): Promise<void> {
     getAvailableGroups,
     writeGroupsSnapshot: (gf, im, ag, rj) =>
       writeGroupsSnapshot(gf, im, ag, rj),
+    onTasksChanged: () => {
+      const tasks = getAllTasks();
+      const taskRows = tasks.map((t) => ({
+        id: t.id,
+        groupFolder: t.group_folder,
+        prompt: t.prompt,
+        schedule_type: t.schedule_type,
+        schedule_value: t.schedule_value,
+        status: t.status,
+        next_run: t.next_run,
+      }));
+      for (const group of Object.values(registeredGroups)) {
+        writeTasksSnapshot(group.folder, group.isMain === true, taskRows);
+      }
+    },
   });
   queue.setProcessMessagesFn(processGroupMessages);
   recoverPendingMessages();
-  startMessageLoop();
+  startMessageLoop().catch((err) => {
+    logger.fatal({ err }, 'Message loop crashed unexpectedly');
+    process.exit(1);
+  });
 }
 
 // Guard: only run when executed directly, not when imported by tests

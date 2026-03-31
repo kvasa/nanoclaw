@@ -31,9 +31,10 @@ import {
   mergeNpmDependencies,
   runNpmInstall,
 } from './structured.js';
-import { ApplyResult } from './types.js';
+import { ApplyOptions, ApplyResult } from './types.js';
 
-export async function applySkill(skillDir: string): Promise<ApplyResult> {
+export async function applySkill(skillDir: string, options?: ApplyOptions): Promise<ApplyResult> {
+  const verified = options?.verified === true;
   const projectRoot = process.cwd();
   const manifest = readManifest(skillDir);
 
@@ -266,7 +267,18 @@ export async function applySkill(skillDir: string): Promise<ApplyResult> {
     }
 
     // --- Post-apply commands ---
+    // Only execute when the skill package was verified with a valid signature.
+    // post_apply runs arbitrary shell commands on the host — unverified packages
+    // must not be able to execute arbitrary code during installation.
     if (manifest.post_apply && manifest.post_apply.length > 0) {
+      if (!verified) {
+        console.warn(
+          `[skills] Skipping post_apply commands for "${manifest.skill}": ` +
+          'skill package was not verified. Pass { verified: true } to allow post_apply execution.',
+        );
+      }
+    }
+    if (verified && manifest.post_apply && manifest.post_apply.length > 0) {
       for (const cmd of manifest.post_apply) {
         try {
           execSync(cmd, { stdio: 'pipe', cwd: projectRoot, timeout: 120_000 });
@@ -316,8 +328,15 @@ export async function applySkill(skillDir: string): Promise<ApplyResult> {
       Object.keys(outcomes).length > 0 ? outcomes : undefined,
     );
 
-    // --- Bug 3 fix: Execute test command if defined ---
-    if (manifest.test) {
+    // --- Execute test command if defined (verified packages only) ---
+    // Same reason as post_apply: test commands run arbitrary shell code on the host.
+    if (manifest.test && !verified) {
+      console.warn(
+        `[skills] Skipping test command for "${manifest.skill}": ` +
+        'skill package was not signature-verified.',
+      );
+    }
+    if (manifest.test && verified) {
       try {
         execSync(manifest.test, {
           stdio: 'pipe',
