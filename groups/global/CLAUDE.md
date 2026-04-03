@@ -92,6 +92,14 @@ When working as a sub-agent or teammate, only use `send_message` if instructed t
 
 Files you create are saved in `/workspace/group/`. Use this for notes, research, or anything that should persist.
 
+## Daily Session Reset
+
+Session restarts every day at 23:59. Before the restart, a daily summary is saved to `/workspace/group/daily-log/YYYY-MM-DD.md`.
+
+*At the start of each new session:*
+1. Read the last 3 files from `/workspace/group/daily-log/` for context
+2. If the user references something from the past, check the logs
+
 ## Memory
 
 Each session, you wake up fresh. The `conversations/` folder contains searchable history of past conversations. Use this to recall context from previous sessions.

@@ -21,6 +21,20 @@ Every outgoing email **requires Honza's approval** via Slack buttons (Odeslat / 
 - Signature: **Ahoj, / Honza** (never "Čau" or "Jan")
 - Never access `/workspace/group/gmail-mcp/` or `~/.gmail-mcp/` — credentials are managed by the host process
 
+## Daily Session Restart
+
+Session se restartuje každý den ve 23:59 CEST. Před restartem se uloží shrnutí dne do `/workspace/group/daily-log/YYYY-MM-DD.md`.
+
+**Při startu nové session:**
+1. Přečti poslední 3 soubory z `/workspace/group/daily-log/` pro kontext
+2. Pokud uživatel odkazuje na něco z minulosti, podívej se do logů
+
+**Preference uživatele (Honza):**
+- Hlasové odpovědi (`send_voice_message`) pouze na vyžádání
+- Časové pásmo: CEST (UTC+2) v létě, CET (UTC+1) v zimě
+- Město: Praha / Mladá Boleslav
+- Stručné odpovědi preferovány
+
 ## Container Mounts
 
 Main has read-only access to the project and read-write access to its group folder:

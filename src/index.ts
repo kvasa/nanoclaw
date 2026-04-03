@@ -38,6 +38,7 @@ import {
   PROXY_BIND_HOST,
 } from './container-runtime.js';
 import {
+  createTask,
   deleteSession,
   getAllChats,
   getAllRegisteredGroups,
@@ -46,6 +47,7 @@ import {
   getMessagesSince,
   getNewMessages,
   getRouterState,
+  getTaskById,
   initDatabase,
   setRegisteredGroup,
   setRouterState,
@@ -166,6 +168,8 @@ function registerGroup(jid: string, group: RegisteredGroup): void {
     { jid, name: group.name, folder: group.folder },
     'Group registered',
   );
+
+  ensureSessionResetTasks();
 }
 
 /**
@@ -512,6 +516,88 @@ async function runAgent(
   }
 }
 
+/**
+ * Ensure each registered group has its two daily session management tasks:
+ *   - 23:55 summary: agent saves a daily log before reset
+ *   - 23:59 reset:   orchestrator clears the session without running the container
+ *
+ * Tasks use deterministic IDs so calling this multiple times is idempotent.
+ */
+function ensureSessionResetTasks(): void {
+  for (const [chatJid, group] of Object.entries(registeredGroups)) {
+    const summaryId = `__daily-summary-${group.folder}`;
+    const resetId = `__daily-reset-${group.folder}`;
+
+    if (!getTaskById(summaryId)) {
+      const next = new Date();
+      next.setHours(23, 55, 0, 0);
+      if (next <= new Date()) next.setDate(next.getDate() + 1);
+      createTask({
+        id: summaryId,
+        group_folder: group.folder,
+        chat_jid: chatJid,
+        prompt:
+          'Ulož shrnutí dnešního dne do /workspace/group/daily-log/YYYY-MM-DD.md ' +
+          '(nahraď YYYY-MM-DD dnešním datem). ' +
+          'Zahrň: hlavní témata konverzace, dokončené úkoly, nedokončené věci, ' +
+          'důležité poznámky a preference uživatele zmíněné dnes. ' +
+          'Formát: markdown s nadpisy. Pokud soubor existuje, aktualizuj ho. ' +
+          'Neodpovídej do chatu — pouze ulož soubor.',
+        schedule_type: 'cron',
+        schedule_value: '55 23 * * *',
+        context_mode: 'group',
+        next_run: next.toISOString(),
+        status: 'active',
+        created_at: new Date().toISOString(),
+      });
+      logger.info(
+        { group: group.folder, taskId: summaryId },
+        'Created daily summary task',
+      );
+    }
+
+    if (!getTaskById(resetId)) {
+      const next = new Date();
+      next.setHours(23, 59, 0, 0);
+      if (next <= new Date()) next.setDate(next.getDate() + 1);
+      createTask({
+        id: resetId,
+        group_folder: group.folder,
+        chat_jid: chatJid,
+        prompt: 'Daily session reset',
+        schedule_type: 'cron',
+        schedule_value: '59 23 * * *',
+        context_mode: 'reset',
+        next_run: next.toISOString(),
+        status: 'active',
+        created_at: new Date().toISOString(),
+      });
+      logger.info(
+        { group: group.folder, taskId: resetId },
+        'Created daily reset task',
+      );
+    }
+  }
+}
+
+function onSessionReset(groupFolder: string, chatJid: string): void {
+  delete sessions[groupFolder];
+  deleteSession(groupFolder);
+  logger.info({ group: groupFolder }, 'Daily session reset');
+
+  const channel = findChannel(channels, chatJid);
+  if (channel) {
+    channel
+      .sendMessage(
+        chatJid,
+        '_Denní restart session dokončen. Nový den, čistý start._',
+      )
+      .catch((err) =>
+        logger.warn({ err, chatJid }, 'Failed to notify session reset'),
+      );
+  }
+}
+
 async function startMessageLoop(): Promise<void> {
   if (messageLoopRunning) {
     logger.debug('Message loop already running, skipping duplicate start');
@@ -672,6 +758,7 @@ async function main(): Promise<void> {
   initDatabase();
   logger.info('Database initialized');
   loadState();
+  ensureSessionResetTasks();
   restoreRemoteControl();
 
   // Start credential proxy (containers route API calls through this)
@@ -926,6 +1013,7 @@ async function main(): Promise<void> {
       const text = formatOutbound(rawText);
       if (text) await channel.sendMessage(jid, text);
     },
+    onSessionReset,
   });
   startIpcWatcher({
     sendMessage: (jid, text, threadTs) => {

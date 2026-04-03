@@ -73,6 +73,7 @@ export interface SchedulerDependencies {
     groupFolder: string,
   ) => void;
   sendMessage: (jid: string, text: string) => Promise<void>;
+  onSessionReset: (groupFolder: string, chatJid: string) => void;
 }
 
 async function runTask(
@@ -148,6 +149,22 @@ async function runTask(
 
   let result: string | null = null;
   let error: string | null = null;
+
+  // For reset context mode, clear the session without running the container
+  if (task.context_mode === 'reset') {
+    deps.onSessionReset(task.group_folder, task.chat_jid);
+    logTaskRun({
+      task_id: task.id,
+      run_at: new Date().toISOString(),
+      duration_ms: Date.now() - startTime,
+      status: 'success',
+      result: 'Session reset',
+      error: null,
+    });
+    const nextRun = computeNextRun(task);
+    updateTaskAfterRun(task.id, nextRun, 'Session reset');
+    return;
+  }
 
   // For group context mode, use the group's current session
   const sessions = deps.getSessions();
