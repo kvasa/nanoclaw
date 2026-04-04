@@ -88,6 +88,8 @@ let sessions: Record<string, string> = {};
 let registeredGroups: Record<string, RegisteredGroup> = {};
 let lastAgentTimestamp: Record<string, string> = {};
 let messageLoopRunning = false;
+let pendingResetGroups: string[] = [];
+let resetNotifyTimer: ReturnType<typeof setTimeout> | null = null;
 let gmailChannel: GmailChannel | undefined;
 
 const channels: Channel[] = [];
@@ -585,17 +587,29 @@ function onSessionReset(groupFolder: string, chatJid: string): void {
   deleteSession(groupFolder);
   logger.info({ group: groupFolder }, 'Daily session reset');
 
-  const channel = findChannel(channels, chatJid);
-  if (channel) {
-    channel
+  pendingResetGroups.push(groupFolder);
+
+  if (resetNotifyTimer) clearTimeout(resetNotifyTimer);
+  resetNotifyTimer = setTimeout(() => {
+    resetNotifyTimer = null;
+    const groups = pendingResetGroups.splice(0);
+    const mainEntry = Object.entries(registeredGroups).find(
+      ([, g]) => g.isMain,
+    );
+    if (!mainEntry) return;
+    const [mainJid] = mainEntry;
+    const mainChannel = findChannel(channels, mainJid);
+    if (!mainChannel) return;
+    const list = groups.map((g) => `• ${g}`).join('\n');
+    mainChannel
       .sendMessage(
-        chatJid,
-        '_Denní restart session dokončen. Nový den, čistý start._',
+        mainJid,
+        `_Denní restart session dokončen. Nový den, čistý start._\n${list}`,
       )
       .catch((err) =>
-        logger.warn({ err, chatJid }, 'Failed to notify session reset'),
+        logger.warn({ err, mainJid }, 'Failed to notify session reset'),
       );
-  }
+  }, 5000);
 }
 
 async function startMessageLoop(): Promise<void> {
