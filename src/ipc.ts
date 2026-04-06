@@ -374,6 +374,7 @@ export async function processTaskIpc(
     schedule_type?: string;
     schedule_value?: string;
     context_mode?: string;
+    model?: string;
     groupFolder?: string;
     chatJid?: string;
     targetJid?: string;
@@ -464,7 +465,9 @@ export async function processTaskIpc(
           data.taskId ||
           `task-${Date.now()}-${crypto.randomBytes(6).toString('hex')}`;
         const contextMode =
-          data.context_mode === 'group' || data.context_mode === 'isolated'
+          data.context_mode === 'group' ||
+          data.context_mode === 'isolated' ||
+          data.context_mode === 'script'
             ? data.context_mode
             : 'isolated';
         createTask({
@@ -475,6 +478,7 @@ export async function processTaskIpc(
           schedule_type: scheduleType,
           schedule_value: data.schedule_value,
           context_mode: contextMode,
+          model: data.model ?? null,
           next_run: nextRun,
           status: 'active',
           created_at: new Date().toISOString(),

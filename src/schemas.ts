@@ -77,7 +77,8 @@ export const IpcScheduleTaskSchema = z.object({
   schedule_value: z.string(),
   targetJid: z.string(),
   taskId: z.string().optional(),
-  context_mode: z.enum(['group', 'isolated']).optional(),
+  context_mode: z.enum(['group', 'isolated', 'script']).optional(),
+  model: z.string().optional(),
   groupFolder: z.string().optional(),
   chatJid: z.string().optional(),
 });

@@ -85,6 +85,7 @@ export interface ContainerInput {
   assistantName?: string;
   enabledMcpServers?: string[];
   triggerMessageTs?: string;
+  model?: string;
 }
 
 export interface ContainerOutput {
@@ -325,6 +326,7 @@ function buildContainerArgs(
   mounts: VolumeMount[],
   containerName: string,
   enabledMcpServers?: string[],
+  modelOverride?: string,
 ): string[] {
   const args: string[] = ['run', '-i', '--rm', '--name', containerName];
 
@@ -359,7 +361,8 @@ function buildContainerArgs(
 
   // Pass model and log detail level to agent-runner
   const agentConfig = readEnvFile(['CLAUDE_MODEL', 'LLM_LOG_DETAIL']);
-  const claudeModel = process.env.CLAUDE_MODEL || agentConfig.CLAUDE_MODEL;
+  const claudeModel =
+    modelOverride || process.env.CLAUDE_MODEL || agentConfig.CLAUDE_MODEL;
   const llmLogDetail = process.env.LLM_LOG_DETAIL || agentConfig.LLM_LOG_DETAIL;
   if (claudeModel) {
     args.push('-e', `CLAUDE_MODEL=${claudeModel}`);
@@ -426,6 +429,7 @@ export async function runContainerAgent(
     mounts,
     containerName,
     input.enabledMcpServers,
+    input.model,
   );
 
   // Inject trigger message timestamp for Slack thread replies.

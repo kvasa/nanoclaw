@@ -1,6 +1,10 @@
-import { ChildProcess } from 'child_process';
+import { ChildProcess, exec as execCb } from 'child_process';
 import { CronExpressionParser } from 'cron-parser';
 import fs from 'fs';
+import path from 'path';
+import { promisify } from 'util';
+
+const exec = promisify(execCb);
 
 import { ASSISTANT_NAME, SCHEDULER_POLL_INTERVAL, TIMEZONE } from './config.js';
 import {
@@ -76,6 +80,28 @@ export interface SchedulerDependencies {
   onSessionReset: (groupFolder: string, chatJid: string) => void;
 }
 
+function finalizeTask(
+  task: ScheduledTask,
+  startTime: number,
+  result: string | null,
+  error: string | null,
+): void {
+  logTaskRun({
+    task_id: task.id,
+    run_at: new Date(startTime).toISOString(),
+    duration_ms: Date.now() - startTime,
+    status: error ? 'error' : 'success',
+    result: result?.slice(0, 200) ?? null,
+    error,
+  });
+  const nextRun = computeNextRun(task);
+  updateTaskAfterRun(
+    task.id,
+    nextRun,
+    error ? `Error: ${error}` : (result?.slice(0, 200) ?? 'Completed'),
+  );
+}
+
 async function runTask(
   task: ScheduledTask,
   deps: SchedulerDependencies,
@@ -94,7 +120,7 @@ async function runTask(
     );
     logTaskRun({
       task_id: task.id,
-      run_at: new Date().toISOString(),
+      run_at: new Date(startTime).toISOString(),
       duration_ms: Date.now() - startTime,
       status: 'error',
       result: null,
@@ -121,7 +147,7 @@ async function runTask(
     );
     logTaskRun({
       task_id: task.id,
-      run_at: new Date().toISOString(),
+      run_at: new Date(startTime).toISOString(),
       duration_ms: Date.now() - startTime,
       status: 'error',
       result: null,
@@ -153,16 +179,34 @@ async function runTask(
   // For reset context mode, clear the session without running the container
   if (task.context_mode === 'reset') {
     deps.onSessionReset(task.group_folder, task.chat_jid);
-    logTaskRun({
-      task_id: task.id,
-      run_at: new Date().toISOString(),
-      duration_ms: Date.now() - startTime,
-      status: 'success',
-      result: 'Session reset',
-      error: null,
-    });
-    const nextRun = computeNextRun(task);
-    updateTaskAfterRun(task.id, nextRun, 'Session reset');
+    finalizeTask(task, startTime, 'Session reset', null);
+    return;
+  }
+
+  // For script mode, run the command directly on the host — no Claude, no container
+  if (task.context_mode === 'script') {
+    let scriptResult: string | null = null;
+    let scriptError: string | null = null;
+    try {
+      const augmentedPath = `${path.dirname(process.execPath)}:${process.env.PATH ?? ''}`;
+      const { stdout, stderr } = await exec(task.prompt, {
+        cwd: groupDir,
+        timeout: 60_000,
+        env: { ...process.env, PATH: augmentedPath },
+      });
+      scriptResult = stdout.trim() || stderr.trim() || null;
+      if (scriptResult) {
+        await deps.sendMessage(task.chat_jid, scriptResult);
+      }
+    } catch (err) {
+      scriptError = err instanceof Error ? err.message : String(err);
+      logger.error(
+        { taskId: task.id, error: scriptError },
+        'Script task failed',
+      );
+      await deps.sendMessage(task.chat_jid, `Chyba skriptu: ${scriptError}`);
+    }
+    finalizeTask(task, startTime, scriptResult, scriptError);
     return;
   }
 
@@ -197,6 +241,7 @@ async function runTask(
         isScheduledTask: true,
         assistantName: ASSISTANT_NAME,
         enabledMcpServers: group.containerConfig?.enabledMcpServers,
+        model: task.model ?? undefined,
       },
       (proc, containerName) =>
         deps.onProcess(task.chat_jid, proc, containerName, task.group_folder),
@@ -236,24 +281,7 @@ async function runTask(
     logger.error({ taskId: task.id, error }, 'Task failed');
   }
 
-  const durationMs = Date.now() - startTime;
-
-  logTaskRun({
-    task_id: task.id,
-    run_at: new Date().toISOString(),
-    duration_ms: durationMs,
-    status: error ? 'error' : 'success',
-    result,
-    error,
-  });
-
-  const nextRun = computeNextRun(task);
-  const resultSummary = error
-    ? `Error: ${error}`
-    : result
-      ? result.slice(0, 200)
-      : 'Completed';
-  updateTaskAfterRun(task.id, nextRun, resultSummary);
+  finalizeTask(task, startTime, result, error);
 }
 
 let schedulerRunning = false;

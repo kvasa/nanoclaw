@@ -239,8 +239,6 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
     return true;
   }
 
-  const isMainGroup = group.isMain === true;
-
   const sinceTimestamp = lastAgentTimestamp[chatJid] || '';
   const missedMessages = getMessagesSince(
     chatJid,
@@ -263,8 +261,8 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
     return true;
   }
 
-  // For non-main groups, check if trigger is required and present
-  if (!isMainGroup && group.requiresTrigger !== false) {
+  // Check if trigger is required and present
+  if (group.requiresTrigger !== false) {
     const allowlistCfg = loadSenderAllowlist();
     const hasTrigger = missedMessages.some(
       (m) =>
@@ -658,10 +656,9 @@ async function startMessageLoop(): Promise<void> {
             continue;
           }
 
-          const isMainGroup = group.isMain === true;
-          const needsTrigger = !isMainGroup && group.requiresTrigger !== false;
+          const needsTrigger = group.requiresTrigger !== false;
 
-          // For non-main groups, only act on trigger messages.
+          // Only act on trigger messages.
           // Non-trigger messages accumulate in DB and get pulled as
           // context when a trigger eventually arrives.
           if (needsTrigger) {

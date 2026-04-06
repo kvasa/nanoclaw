@@ -560,8 +560,8 @@ async function runQuery(
       ],
     },
     calendar: {
-      command: 'npx',
-      args: ['-y', 'caldav-mcp'],
+      command: 'caldav-mcp',
+      args: [],
       env: {
         CALDAV_BASE_URL: process.env.CALDAV_BASE_URL || 'https://caldav.icloud.com/',
         CALDAV_USERNAME: process.env.APPLE_ID || '',
