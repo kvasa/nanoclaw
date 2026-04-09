@@ -13,10 +13,17 @@ logs/
 groups/*
 !groups/main/
 !groups/global/
+!groups/investice/
 groups/main/*
 groups/global/*
+groups/investice/*
 !groups/main/CLAUDE.md
+!groups/main/*.js
+!groups/main/package.json
 !groups/global/CLAUDE.md
+!groups/investice/CLAUDE.md
+!groups/investice/*.js
+!groups/investice/package.json
 
 # Secrets
 *.keys.json

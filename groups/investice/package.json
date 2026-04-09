@@ -1,0 +1,9 @@
+{
+  "dependencies": {
+    "chart.js": "^4.5.1",
+    "chartjs-node-canvas": "^5.0.0",
+    "googleapis": "^171.4.0",
+    "jsonwebtoken": "^9.0.3",
+    "yahoo-finance2": "^3.13.2"
+  }
+}

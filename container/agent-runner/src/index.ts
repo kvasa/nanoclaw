@@ -590,14 +590,7 @@ async function runQuery(
   );
   log(`[prompt] ${containerInput.prompt}`);
 
-  // Send initial progress update to create the Slack thread
-  sendProgressUpdate(
-    containerInput.chatJid,
-    containerInput.groupFolder,
-    'Zpracovávám…',
-  );
 
-  let sentComposingProgress = false;
   for await (const message of query({
     prompt: stream,
     options: {
@@ -662,30 +655,10 @@ async function runQuery(
       for (const block of content) {
         if (block.type === 'text' && block.text) {
           log(`[assistant] ${trunc(block.text as string)}`);
-          // Send "composing" progress when assistant responds with text only (no tools)
-          if (!hasToolUse && !sentComposingProgress) {
-            sentComposingProgress = true;
-            sendProgressUpdate(
-              containerInput.chatJid,
-              containerInput.groupFolder,
-              '💬 Formuluji odpověď…',
-            );
-          }
         } else if (block.type === 'tool_use') {
           log(
             `[tool_call] ${block.name}(${trunc(JSON.stringify(block.input ?? {}), 300)})`,
           );
-          const progressText = describeToolCall(
-            block.name as string,
-            (block.input as Record<string, unknown>) ?? {},
-          );
-          if (progressText) {
-            sendProgressUpdate(
-              containerInput.chatJid,
-              containerInput.groupFolder,
-              progressText,
-            );
-          }
         }
       }
     } else if (message.type === 'assistant' && typeof content === 'string') {
