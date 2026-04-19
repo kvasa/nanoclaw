@@ -30,12 +30,22 @@ RUN apt-get update && apt-get install -y \
 ENV AGENT_BROWSER_EXECUTABLE_PATH=/usr/bin/chromium
 ENV PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH=/usr/bin/chromium
 
-# Install agent-browser (native Rust, 7 MB binary) and claude-code globally.
-# NOTE: When bumping the agent-browser version, also regenerate
+# Install agent-browser (native Rust) globally.
+# We don't install @anthropic-ai/claude-code: the SDK (0.2.114+) ships the
+# CLI as a platform-specific optional dep (claude-agent-sdk-linux-x64) and
+# agent-runner/src/index.ts resolves that path explicitly via
+# pathToClaudeCodeExecutable — the global install would be a 226 MB duplicate.
+# After install, strip the multi-arch agent-browser binaries we never run
+# in this Debian x64 container (keeps only linux-x64, ~58 MB saved).
+# NOTE: When bumping agent-browser, also regenerate
 # container/skills/agent-browser/SKILL.md from `agent-browser skills get core`
 # and bump the `source-version` field in its frontmatter (see the HTML comment
 # at the top of that file for the exact commands).
-RUN npm install -g agent-browser@0.26.0 @anthropic-ai/claude-code
+RUN npm install -g agent-browser@0.26.0 && \
+    find /usr/local/lib/node_modules/agent-browser/bin \
+        -type f -name 'agent-browser-*' \
+        ! -name 'agent-browser-linux-x64' -delete && \
+    npm cache clean --force
 
 # Create app directory
 WORKDIR /app
