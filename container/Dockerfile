@@ -3,27 +3,36 @@
 
 FROM node:22-slim
 
-# Install system dependencies for Chromium
-RUN apt-get update && apt-get install -y \
+# Install system dependencies for Chromium.
+# --no-install-recommends drops ~220 MB of unused recommends pulled in by
+# chromium and git (printer config GUI, Samba, Avahi/mDNS, Python, cpp-12,
+# GIR bindings, X server tooling). We explicitly re-add the four that we
+# actually want: ca-certificates (TLS trust), openssh-client (git over ssh),
+# less (git pager), patch (3-way merges).
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates \
     chromium \
+    curl \
     fonts-liberation \
     fonts-noto-cjk \
     fonts-noto-color-emoji \
-    libgbm1 \
-    libnss3 \
+    git \
+    less \
+    libasound2 \
     libatk-bridge2.0-0 \
+    libcups2 \
+    libdrm2 \
+    libgbm1 \
     libgtk-3-0 \
+    libnss3 \
+    libpangocairo-1.0-0 \
     libx11-xcb1 \
     libxcomposite1 \
     libxdamage1 \
     libxrandr2 \
-    libasound2 \
-    libpangocairo-1.0-0 \
-    libcups2 \
-    libdrm2 \
     libxshmfence1 \
-    curl \
-    git \
+    openssh-client \
+    patch \
     && rm -rf /var/lib/apt/lists/*
 
 # Set Chromium path for agent-browser
