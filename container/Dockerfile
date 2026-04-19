@@ -40,7 +40,12 @@ WORKDIR /app
 COPY agent-runner/package*.json ./
 
 # Install dependencies
-RUN npm install
+# SDK 0.2.114+ ships the CLI as optional platform deps; on Linux both
+# musl and glibc variants install, and the SDK resolver picks musl first.
+# Our base image is Debian (glibc), so drop the musl binary to force the
+# SDK to fall through to the glibc variant.
+RUN npm install && \
+    rm -rf node_modules/@anthropic-ai/claude-agent-sdk-linux-x64-musl
 
 # Copy source code
 COPY agent-runner/ ./

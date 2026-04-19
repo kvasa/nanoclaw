@@ -22,6 +22,30 @@ import {
   PreCompactHookInput,
 } from '@anthropic-ai/claude-agent-sdk';
 import { fileURLToPath } from 'url';
+import { createRequire } from 'module';
+
+// SDK 0.2.114+ ships the CLI as platform-specific native binaries via
+// optional deps. On Linux it auto-picks the musl variant first, which
+// fails on our glibc (Debian) base with ENOENT. Resolve explicitly.
+const nodeRequire = createRequire(import.meta.url);
+function resolveClaudeExecutable(): string | undefined {
+  const candidates =
+    process.platform === 'linux' && process.arch === 'x64'
+      ? [
+          '@anthropic-ai/claude-agent-sdk-linux-x64/claude',
+          '@anthropic-ai/claude-agent-sdk-linux-x64-musl/claude',
+        ]
+      : [];
+  for (const c of candidates) {
+    try {
+      return nodeRequire.resolve(c);
+    } catch {
+      /* try next */
+    }
+  }
+  return undefined;
+}
+const CLAUDE_EXECUTABLE_PATH = resolveClaudeExecutable();
 
 interface ContainerInput {
   prompt: string;
@@ -586,7 +610,7 @@ async function runQuery(
   }
 
   log(
-    `[config] model=${CLAUDE_MODEL} session=${containerInput.sessionId || 'new'} mcpServers=${Object.keys(mcpServers).join(',')}`,
+    `[config] model=${CLAUDE_MODEL} session=${containerInput.sessionId || 'new'} mcpServers=${Object.keys(mcpServers).join(',')} claudeExec=${CLAUDE_EXECUTABLE_PATH ?? 'sdk-default'}`,
   );
   log(`[prompt] ${containerInput.prompt}`);
 
@@ -636,6 +660,7 @@ async function runQuery(
         ...[...enabledMcpNames].map((name) => `mcp__${name}__*`),
       ],
       env: sdkEnv,
+      pathToClaudeCodeExecutable: CLAUDE_EXECUTABLE_PATH,
       permissionMode: 'bypassPermissions',
       allowDangerouslySkipPermissions: true,
       settingSources: ['project', 'user'],
