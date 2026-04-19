@@ -598,6 +598,9 @@ async function runQuery(
   );
 
   let sentComposingProgress = false;
+  let lastBlockType: 'tool_use' | 'tool_result' | 'text' | null = null;
+  const lastTaskProgressAt = new Map<string, number>();
+  const TASK_PROGRESS_MIN_INTERVAL_MS = 15000;
   for await (const message of query({
     prompt: stream,
     options: {
@@ -637,6 +640,8 @@ async function runQuery(
       allowDangerouslySkipPermissions: true,
       settingSources: ['project', 'user'],
       mcpServers: mcpServers,
+      agentProgressSummaries: true,
+      includePartialMessages: true,
       hooks: {
         PreCompact: [
           { hooks: [createPreCompactHook(containerInput.assistantName)] },
@@ -645,6 +650,13 @@ async function runQuery(
     },
   })) {
     messageCount++;
+
+    // Partial streaming deltas arrive as type 'stream_event'. We enabled
+    // includePartialMessages to receive status/task_progress events, but
+    // we don't render token-level deltas — skip them early.
+    if ((message as { type?: string }).type === 'stream_event') {
+      continue;
+    }
 
     // Clean logging: show prompts and responses, skip noise
     const trunc = (s: string, max = 500) =>
@@ -662,6 +674,7 @@ async function runQuery(
       for (const block of content) {
         if (block.type === 'text' && block.text) {
           log(`[assistant] ${trunc(block.text as string)}`);
+          lastBlockType = 'text';
           // Send "composing" progress when assistant responds with text only (no tools)
           if (!hasToolUse && !sentComposingProgress) {
             sentComposingProgress = true;
@@ -675,6 +688,7 @@ async function runQuery(
           log(
             `[tool_call] ${block.name}(${trunc(JSON.stringify(block.input ?? {}), 300)})`,
           );
+          lastBlockType = 'tool_use';
           const progressText = describeToolCall(
             block.name as string,
             (block.input as Record<string, unknown>) ?? {},
@@ -700,6 +714,7 @@ async function runQuery(
               ? block.content
               : JSON.stringify(block.content ?? '');
           log(`[tool_result] ${trunc(body, 300)}`);
+          lastBlockType = 'tool_result';
         } else if (block.type === 'text') {
           log(`[user] ${trunc(block.text as string)}`);
         }
@@ -729,6 +744,57 @@ async function runQuery(
       log(
         `Task notification: task=${tn.task_id} status=${tn.status} summary=${tn.summary}`,
       );
+    }
+
+    // Status events: 'requesting' fires before each API call, 'compacting'
+    // when history is being compacted. Only notify on 'requesting' after a
+    // tool_result — signals "Claude is thinking again after tool output".
+    if (
+      message.type === 'system' &&
+      (message as { subtype?: string }).subtype === 'status'
+    ) {
+      const st = (message as { status?: string }).status;
+      log(`[status] ${st}`);
+      if (st === 'requesting' && lastBlockType === 'tool_result') {
+        sendProgressUpdate(
+          containerInput.chatJid,
+          containerInput.groupFolder,
+          '🤔 Přemýšlím…',
+        );
+        lastBlockType = 'text';
+      } else if (st === 'compacting') {
+        sendProgressUpdate(
+          containerInput.chatJid,
+          containerInput.groupFolder,
+          '🗜️ Kompaktuji historii…',
+        );
+      }
+    }
+
+    // Subagent progress summaries (agentProgressSummaries: true). Throttled
+    // per-task to avoid flooding. Summary is AI-generated present-tense text.
+    if (
+      message.type === 'system' &&
+      (message as { subtype?: string }).subtype === 'task_progress'
+    ) {
+      const tp = message as {
+        task_id: string;
+        summary?: string;
+        description?: string;
+      };
+      const text = tp.summary || tp.description;
+      if (text) {
+        const now = Date.now();
+        const last = lastTaskProgressAt.get(tp.task_id) ?? 0;
+        if (now - last >= TASK_PROGRESS_MIN_INTERVAL_MS) {
+          lastTaskProgressAt.set(tp.task_id, now);
+          sendProgressUpdate(
+            containerInput.chatJid,
+            containerInput.groupFolder,
+            `🔀 ${text}`,
+          );
+        }
+      }
     }
 
     if (message.type === 'result') {
