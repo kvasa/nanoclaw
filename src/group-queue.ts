@@ -198,22 +198,31 @@ export class GroupQueue {
   }
 
   /**
-   * Update the thread timestamp file so the container uses the correct thread
-   * for progress updates when messages are piped into a running container.
+   * Write (or clear) the thread timestamp file used by the container for
+   * progress replies. Takes groupFolder directly so it works before a
+   * container has been spawned (when state.groupFolder is still null).
+   *
+   * Pass undefined to remove a stale file from a previous container so
+   * the env var fallback wins at the next container start.
    */
-  updateThreadTs(groupJid: string, threadTs: string): void {
-    const state = this.getGroup(groupJid);
-    if (!state.groupFolder) return;
-
-    const ipcDir = path.join(DATA_DIR, 'ipc', state.groupFolder);
+  updateThreadTs(groupFolder: string, threadTs: string | undefined): void {
+    const ipcDir = path.join(DATA_DIR, 'ipc', groupFolder);
+    const filePath = path.join(ipcDir, 'thread_ts');
     try {
-      fs.mkdirSync(ipcDir, { recursive: true });
-      const filePath = path.join(ipcDir, 'thread_ts');
-      const tempPath = `${filePath}.tmp`;
-      fs.writeFileSync(tempPath, threadTs);
-      fs.renameSync(tempPath, filePath);
+      if (threadTs) {
+        fs.mkdirSync(ipcDir, { recursive: true });
+        const tempPath = `${filePath}.tmp`;
+        fs.writeFileSync(tempPath, threadTs);
+        fs.renameSync(tempPath, filePath);
+      } else {
+        try {
+          fs.unlinkSync(filePath);
+        } catch {
+          /* file may not exist */
+        }
+      }
     } catch (err) {
-      logger.debug({ groupJid, err }, 'Failed to write thread_ts file');
+      logger.debug({ groupFolder, err }, 'Failed to update thread_ts file');
     }
   }
 

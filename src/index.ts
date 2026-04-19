@@ -284,11 +284,12 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
   const triggerTs = latestThreadTs[chatJid];
   // Clear after use so stale values don't leak to future invocations
   delete latestThreadTs[chatJid];
-  // Write threadTs to file so the container can read it dynamically
-  // (env var is only set once at container start, but messages can be piped later)
-  if (triggerTs) {
-    queue.updateThreadTs(chatJid, triggerTs);
-  }
+  // Overwrite thread_ts file so the container's progress replies land in
+  // this message's thread. Must use group.folder directly — the queue's
+  // state lookup returns null at this point (container not yet spawned),
+  // which would silently drop the write and leave the previous container's
+  // thread_ts to leak into this new session.
+  queue.updateThreadTs(group.folder, triggerTs);
 
   await channel.setTyping?.(chatJid, true);
   const reactedMsgId = findLastUserMessageId(missedMessages);
