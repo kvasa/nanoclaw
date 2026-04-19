@@ -158,14 +158,31 @@ export class GroupQueue {
   /**
    * Send a follow-up message to the active container via IPC file.
    * Returns true if the message was written, false if no active container.
+   *
+   * Optional threadTs is written to /workspace/ipc/thread_ts *before* the
+   * input file, so the container can't drain the new input while thread_ts
+   * still points at the previous thread.
    */
-  sendMessage(groupJid: string, text: string): boolean {
+  sendMessage(groupJid: string, text: string, threadTs?: string): boolean {
     const state = this.getGroup(groupJid);
     if (!state.active || !state.groupFolder || state.isTaskContainer)
       return false;
     state.idleWaiting = false; // Agent is about to receive work, no longer idle
 
-    const inputDir = path.join(DATA_DIR, 'ipc', state.groupFolder, 'input');
+    const ipcGroupDir = path.join(DATA_DIR, 'ipc', state.groupFolder);
+    if (threadTs) {
+      try {
+        fs.mkdirSync(ipcGroupDir, { recursive: true });
+        const filePath = path.join(ipcGroupDir, 'thread_ts');
+        const tempPath = `${filePath}.tmp`;
+        fs.writeFileSync(tempPath, threadTs);
+        fs.renameSync(tempPath, filePath);
+      } catch (err) {
+        logger.debug({ groupJid, err }, 'Failed to write thread_ts file');
+      }
+    }
+
+    const inputDir = path.join(ipcGroupDir, 'input');
     try {
       fs.mkdirSync(inputDir, { recursive: true });
       const filename = `${Date.now()}-${Math.random().toString(36).slice(2, 6)}.json`;

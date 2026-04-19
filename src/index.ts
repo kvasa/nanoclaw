@@ -578,11 +578,13 @@ async function startMessageLoop(): Promise<void> {
             continue;
           }
 
-          if (queue.sendMessage(chatJid, formatted)) {
-            // Update threadTs file so the container uses the new message's thread
-            const pipedThreadTs = latestThreadTs[chatJid];
+          // Pass threadTs so sendMessage writes it BEFORE the input file —
+          // container polls input every 500ms, and if it drained the new
+          // input while thread_ts still pointed at the previous thread, the
+          // new message's 'requesting' progress would land in the old one.
+          const pipedThreadTs = latestThreadTs[chatJid];
+          if (queue.sendMessage(chatJid, formatted, pipedThreadTs)) {
             if (pipedThreadTs) {
-              queue.updateThreadTs(chatJid, pipedThreadTs);
               delete latestThreadTs[chatJid];
             }
             logger.debug(
