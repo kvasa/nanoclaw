@@ -30,8 +30,12 @@ RUN apt-get update && apt-get install -y \
 ENV AGENT_BROWSER_EXECUTABLE_PATH=/usr/bin/chromium
 ENV PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH=/usr/bin/chromium
 
-# Install agent-browser (pre-Rust, stable) and claude-code globally
-RUN npm install -g agent-browser@0.19.0 @anthropic-ai/claude-code
+# Install agent-browser (native Rust, 7 MB binary) and claude-code globally.
+# NOTE: When bumping the agent-browser version, also regenerate
+# container/skills/agent-browser/SKILL.md from `agent-browser skills get core`
+# and bump the `source-version` field in its frontmatter (see the HTML comment
+# at the top of that file for the exact commands).
+RUN npm install -g agent-browser@0.26.0 @anthropic-ai/claude-code
 
 # Create app directory
 WORKDIR /app
