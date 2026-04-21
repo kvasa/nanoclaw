@@ -5,10 +5,14 @@ FROM node:22-slim
 
 # Install system dependencies for Chromium.
 # --no-install-recommends drops ~220 MB of unused recommends pulled in by
-# chromium and git (printer config GUI, Samba, Avahi/mDNS, Python, cpp-12,
+# chromium and git (printer config GUI, Samba, Avahi/mDNS, cpp-12,
 # GIR bindings, X server tooling). We explicitly re-add the four that we
 # actually want: ca-certificates (TLS trust), openssh-client (git over ssh),
 # less (git pager), patch (3-way merges).
+# Python3 toolkit: python3 + pip + venv plus the most common stdlib-adjacent
+# libraries (requests, bs4, lxml, yaml, dateutil). Installed via apt so they
+# reuse shared libs and skip wheel download overhead; agents can still pip
+# install extras inside a venv under /workspace.
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
     chromium \
@@ -33,6 +37,14 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libxshmfence1 \
     openssh-client \
     patch \
+    python3 \
+    python3-bs4 \
+    python3-dateutil \
+    python3-lxml \
+    python3-pip \
+    python3-requests \
+    python3-venv \
+    python3-yaml \
     && rm -rf /var/lib/apt/lists/*
 
 # Set Chromium path for agent-browser
