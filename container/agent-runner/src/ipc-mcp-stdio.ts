@@ -20,18 +20,6 @@ const TASKS_DIR = path.join(IPC_DIR, 'tasks');
 const chatJid = process.env.NANOCLAW_CHAT_JID!;
 const groupFolder = process.env.NANOCLAW_GROUP_FOLDER!;
 const isMain = process.env.NANOCLAW_IS_MAIN === '1';
-function getThreadTs(): string | undefined {
-  const threadTsFile = path.join(IPC_DIR, 'thread_ts');
-  try {
-    if (fs.existsSync(threadTsFile)) {
-      const ts = fs.readFileSync(threadTsFile, 'utf-8').trim();
-      if (ts) return ts;
-    }
-  } catch {
-    // ignore
-  }
-  return process.env.NANOCLAW_THREAD_TS;
-}
 
 function writeIpcFile(dir: string, data: object): string {
   fs.mkdirSync(dir, { recursive: true });
@@ -54,7 +42,7 @@ const server = new McpServer({
 
 server.tool(
   'send_message',
-  "Send a message to the user or group immediately while you're still running. Use this for progress updates or to send multiple messages. You can call this multiple times.",
+  "Send a message to the user or group immediately while you're still running. Use this to send multiple messages or partial results. Do NOT use this for status updates like 'I am searching…' or 'Processing…' — only send substantive content.",
   {
     text: z.string().describe('The message text to send'),
     sender: z.string().optional().describe('Your role/identity name (e.g. "Researcher"). When set, messages appear from a dedicated bot in Telegram.'),
@@ -65,14 +53,13 @@ server.tool(
       chatJid,
       text: args.text,
       sender: args.sender || undefined,
-      threadTs: getThreadTs() || undefined,
       groupFolder,
       timestamp: new Date().toISOString(),
     };
 
     writeIpcFile(MESSAGES_DIR, data);
 
-    return { content: [{ type: 'text' as const, text: 'Message sent.' }] };
+    return { content: [{ type: 'text' as const, text: 'OK. Do not repeat or summarize what you just sent.' }] };
   },
 );
 

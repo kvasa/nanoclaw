@@ -1,6 +1,7 @@
 const YahooFinance = require('yahoo-finance2').default;
 const yf = new YahooFinance({ suppressNotices: ['yahooSurvey', 'ripHistorical'] });
 const { getPortfolioFromSheet } = require('./portfolio-from-sheet.js');
+const { getFxRate } = require('./fx-rates.js');
 
 const indices = [
   { name: 'S&P 500',  yahoo: '^GSPC' },
@@ -25,25 +26,34 @@ function nowCET() {
   });
 }
 
+async function retry(fn, attempts = 3, delayMs = 2000) {
+  for (let i = 0; i < attempts; i++) {
+    try { return await fn(); } catch (e) {
+      if (i === attempts - 1) throw e;
+      await new Promise(r => setTimeout(r, delayMs));
+    }
+  }
+}
+
 async function run() {
   // Načti aktuální pozice ze sheetu
   const { positions, cashCZK } = await getPortfolioFromSheet();
 
   const [eurczk, usdczk] = await Promise.all([
-    yf.quote('EURCZK=X'),
-    yf.quote('USDCZK=X'),
+    getFxRate('EUR', 'CZK'),
+    getFxRate('USD', 'CZK'),
   ]);
-  const eurRate = eurczk.regularMarketPrice;
-  const usdRate = usdczk.regularMarketPrice;
-  const eurDay = eurczk.regularMarketChangePercent;
-  const usdDay = usdczk.regularMarketChangePercent;
+  const eurRate = eurczk.price;
+  const usdRate = usdczk.price;
+  const eurDay = eurczk.changePercent;
+  const usdDay = usdczk.changePercent;
 
   // Fetch all positions
   const posData = [];
   let totalCZK = cashCZK;
   let totalPrevCZK = cashCZK;
   for (const t of positions) {
-    const q = await yf.quote(t.yahoo);
+    const q = await yf.quote(t.yahoo).catch(e => { throw new Error(t.yahoo + ' (' + t.name + '): ' + e.message); });
     const day = q.regularMarketChangePercent;
     const price = q.regularMarketPrice;
     const name = t.name;
@@ -60,7 +70,7 @@ async function run() {
 
   const posLines = posData.map(({ t, day, price, currency, valCZK }) => {
     const icon = day >= 0 ? '🟢' : '🔴';
-    return icon + ' *' + t.name + '* (' + t.id + ')\n   '
+    return icon + ' *' + t.name + '* (' + t.id + ') - ' + t.count + ' Ks\n   '
       + price.toFixed(2) + ' ' + currency + '  '
       + s(day) + day.toFixed(2) + '%  →  '
       + fmt(valCZK) + ' Kč';
@@ -69,7 +79,7 @@ async function run() {
   // Fetch indices
   const idxLines = [];
   for (const idx of indices) {
-    const q = await yf.quote(idx.yahoo);
+    const q = await yf.quote(idx.yahoo).catch(e => { throw new Error(idx.yahoo + ' (' + idx.name + '): ' + e.message); });
     const day = q.regularMarketChangePercent;
     const icon = day >= 0 ? '🟢' : '🔴';
     idxLines.push(icon + ' ' + idx.name + ': ' + fmt(q.regularMarketPrice) + ' (' + s(day) + day.toFixed(2) + '%)');
@@ -81,7 +91,7 @@ async function run() {
     + '_' + nowCET() + '_\n'
     + sep + '\n\n'
     + '💼 *Hodnota portfolia: ' + fmt(totalCZK) + ' Kč*\n'
-    + '   _' + s(totalDayPct) + totalDayPct.toFixed(2) + '% (' + s(totalDayCZK) + fmt(totalDayCZK) + ' Kč) za dnešní den_\n\n'
+    + '   _' + s(totalDayPct) + totalDayPct.toFixed(2) + '% (' + s(totalDayCZK) + fmt(totalDayCZK) + ' Kč) za včerejší den_\n\n'
     + posLines.join('\n\n')
     + '\n\n' + sep + '\n\n'
     + '*💱 Kurzy CZK*\n'
@@ -93,4 +103,4 @@ async function run() {
 
   process.stdout.write(output);
 }
-run().catch(e => process.stderr.write('ERROR: ' + e.message));
+run().catch(e => process.stderr.write('ERROR: ' + e.message + '\n' + (e.stack || '')));

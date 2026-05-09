@@ -21,22 +21,42 @@ function getSecret(key) {
   } catch { return null; }
 }
 
+// WMO weather code → Czech description
+const WMO_DESC = {
+  0: 'jasno', 1: 'převážně jasno', 2: 'částečně oblačno', 3: 'zataženo',
+  45: 'mlha', 48: 'mlha s jinovatkou',
+  51: 'slabé mrholení', 53: 'mrholení', 55: 'silné mrholení',
+  61: 'slabý déšť', 63: 'déšť', 65: 'silný déšť',
+  71: 'slabé sněžení', 73: 'sněžení', 75: 'silné sněžení',
+  80: 'přeháňky', 81: 'přeháňky', 82: 'silné přeháňky',
+  95: 'bouřka', 96: 'bouřka s krupobitím', 99: 'bouřka s krupobitím',
+};
+
 // ─── Weather ────────────────────────────────────────────────────────────
 async function getWeather() {
-  try {
-    const res = await axios.get('https://wttr.in/Prague?format=j1', { timeout: 8000 });
-    const cur = res.data.current_condition[0];
-    const w = res.data.weather[0];
-    const desc = cur.weatherDesc[0].value;
-    const temp = cur.temp_C;
-    const maxT = w.maxtempC;
-    const minT = w.mintempC;
-    const rain = w.hourly.reduce((s, h) => s + parseFloat(h.precipMM || 0), 0).toFixed(1);
-    const rainStr = parseFloat(rain) > 0.5 ? `, srážky ${rain} mm` : '';
-    return `${temp}°C (${minT}–${maxT}°C), ${desc}${rainStr}`;
-  } catch (e) {
-    return `nedostupné (${e.message})`;
+  const url = 'https://api.open-meteo.com/v1/forecast?latitude=50.0755&longitude=14.4378' +
+    '&current=temperature_2m,weathercode&daily=temperature_2m_max,temperature_2m_min,precipitation_sum' +
+    '&timezone=Europe%2FPrague&forecast_days=1';
+  let lastErr;
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try {
+      if (attempt > 0) await new Promise(r => setTimeout(r, attempt * 3000));
+      const res = await axios.get(url, { timeout: 8000 });
+      const temp = Math.round(res.data.current.temperature_2m);
+      const code = res.data.current.weathercode;
+      const maxT = Math.round(res.data.daily.temperature_2m_max[0]);
+      const minT = Math.round(res.data.daily.temperature_2m_min[0]);
+      const rain = parseFloat(res.data.daily.precipitation_sum[0] ?? 0);
+      const desc = WMO_DESC[code] ?? `kód ${code}`;
+      const rainStr = rain > 0.5 ? `, srážky ${rain.toFixed(1)} mm` : '';
+      return `${temp}°C (${minT}–${maxT}°C), ${desc}${rainStr}`;
+    } catch (e) {
+      lastErr = e;
+      const status = e.response?.status;
+      if (status && status < 500) break; // 4xx — don't retry
+    }
   }
+  return `nedostupné (${lastErr.message})`;
 }
 
 // ─── Calendar ───────────────────────────────────────────────────────────
@@ -191,29 +211,66 @@ async function getGarmin() {
     yesterday.setDate(yesterday.getDate() - 1);
     const dateStr = yesterday.toISOString().split('T')[0];
 
-    const res = await axios.get(
-      `${GARMIN_API}/usersummary-service/usersummary/daily/${profile.displayName}?calendarDate=${dateStr}`,
-      {
-        headers: { Authorization: `Bearer ${oauth2.access_token}`, 'User-Agent': UA },
-        timeout: 8000,
-        validateStatus: () => true,
-      }
-    );
+    const headers = { Authorization: `Bearer ${oauth2.access_token}`, 'User-Agent': UA };
+    const reqOpts = { headers, timeout: 8000, validateStatus: () => true };
 
-    if (res.status === 429) return 'nedostupný (rate limit)';
-    if (res.status !== 200) return `nedostupný (${res.status})`;
+    const [summaryRes, sleepRes, hrvRes] = await Promise.all([
+      axios.get(`${GARMIN_API}/usersummary-service/usersummary/daily/${profile.displayName}?calendarDate=${dateStr}`, reqOpts),
+      axios.get(`${GARMIN_API}/wellness-service/wellness/dailySleepData/${profile.displayName}?date=${dateStr}&nonSleepBufferMinutes=60`, reqOpts),
+      axios.get(`${GARMIN_API}/hrv-service/hrv/${dateStr}`, reqOpts),
+    ]);
 
-    const d = res.data;
+    if (summaryRes.status === 429) return 'nedostupný (rate limit)';
+    if (summaryRes.status !== 200) return `nedostupný (${summaryRes.status})`;
+
+    const d = summaryRes.data;
     const steps = d.totalSteps != null ? d.totalSteps.toLocaleString('cs-CZ') : null;
-    const sleepSec = d.sleepingSeconds ?? 0;
-    const sleepStr = sleepSec > 0 ? `${Math.floor(sleepSec / 3600)}h${String(Math.floor((sleepSec % 3600) / 60)).padStart(2, '0')}m` : null;
-    const bb = d.averageBodyBattery ?? d.minBodyBattery ?? null;
+
+    // Body Battery
+    const bbHigh = d.bodyBatteryHighestValue ?? d.averageBodyBattery ?? null;
+    const bbLow = d.bodyBatteryLowestValue ?? d.minBodyBattery ?? null;
+    const bbStr = bbHigh != null && bbLow != null ? `${bbLow}→${bbHigh}` : (bbHigh ?? bbLow ?? null);
+
+    // Sleep
+    let sleepStr = null;
+    let sleepScore = null;
+    let sleepPhases = null;
+    if (sleepRes.status === 200 && sleepRes.data) {
+      const s = sleepRes.data;
+      const totalSec = s.sleepTimeSeconds ?? s.unmeasurableSleepSeconds ?? 0;
+      if (totalSec > 0) {
+        sleepStr = `${Math.floor(totalSec / 3600)}h${String(Math.floor((totalSec % 3600) / 60)).padStart(2, '0')}m`;
+      }
+      sleepScore = s.sleepScores?.overall?.value ?? s.sleepScores?.totalDuration?.qualifierKey ?? null;
+      const deepSec = s.deepSleepSeconds ?? 0;
+      const lightSec = s.lightSleepSeconds ?? 0;
+      const remSec = s.remSleepSeconds ?? 0;
+      if (deepSec + lightSec + remSec > 0) {
+        const fmtH = (sec) => `${Math.floor(sec / 3600)}h${String(Math.floor((sec % 3600) / 60)).padStart(2, '0')}m`;
+        sleepPhases = `deep ${fmtH(deepSec)}, light ${fmtH(lightSec)}, REM ${fmtH(remSec)}`;
+      }
+    }
+    // Fallback sleep from summary
+    if (!sleepStr) {
+      const sleepSec = d.sleepingSeconds ?? 0;
+      if (sleepSec > 0) sleepStr = `${Math.floor(sleepSec / 3600)}h${String(Math.floor((sleepSec % 3600) / 60)).padStart(2, '0')}m`;
+    }
+
+    // HRV
+    let hrvVal = null;
+    if (hrvRes.status === 200 && hrvRes.data) {
+      const h = hrvRes.data;
+      hrvVal = h.lastNightAvg ?? h.weeklyAvg ?? h.hrvValue ?? null;
+    }
 
     const parts = [];
-    if (steps) parts.push(`👣 ${steps} kroků`);
-    if (sleepStr) parts.push(`😴 ${sleepStr}`);
-    if (bb != null) parts.push(`⚡ BB ${bb}`);
-    return parts.length ? parts.join(' | ') : 'bez dat';
+    if (steps) parts.push(`🚶 ${steps} kroků`);
+    const sleepParts = [sleepStr, sleepScore != null ? `score ${sleepScore}` : null].filter(Boolean).join(' (') + (sleepScore != null ? ')' : '');
+    if (sleepStr) parts.push(`💤 ${sleepParts}`);
+    if (sleepPhases) parts.push(`   ${sleepPhases}`);
+    if (bbStr != null) parts.push(`🔋 BB: ${bbStr}`);
+    if (hrvVal != null) parts.push(`💓 HRV: ${hrvVal} ms`);
+    return parts.length ? parts.join('\n') : 'bez dat';
   } catch (e) {
     return `nedostupný (${e.message})`;
   }
@@ -238,7 +295,8 @@ async function main() {
     `📅 *Dnes:*`,
     ...events,
     '',
-    `⌚ *Garmin (včera):* ${garmin}`,
+    `⌚ *Garmin (včera):*`,
+    garmin,
   ];
 
   process.stdout.write(lines.join('\n'));
