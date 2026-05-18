@@ -248,8 +248,10 @@ async function runTask(
       async (streamedOutput: ContainerOutput) => {
         if (streamedOutput.result) {
           result = streamedOutput.result;
-          // Forward result to user (sendMessage handles formatting)
-          await deps.sendMessage(task.chat_jid, streamedOutput.result);
+          // Internal system tasks (__ prefix) are silent — don't forward to chat
+          if (!task.id.startsWith('__')) {
+            await deps.sendMessage(task.chat_jid, streamedOutput.result);
+          }
           scheduleClose();
         }
         if (streamedOutput.status === 'success') {

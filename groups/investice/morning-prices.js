@@ -35,6 +35,10 @@ async function retry(fn, attempts = 3, delayMs = 2000) {
   }
 }
 
+function isMonday() {
+  return new Date().toLocaleDateString('en-US', { timeZone: 'Europe/Prague', weekday: 'short' }) === 'Mon';
+}
+
 async function run() {
   // Načti aktuální pozice ze sheetu
   const { positions, cashCZK } = await getPortfolioFromSheet();
@@ -91,14 +95,14 @@ async function run() {
     + '_' + nowCET() + '_\n'
     + sep + '\n\n'
     + '💼 *Hodnota portfolia: ' + fmt(totalCZK) + ' Kč*\n'
-    + '   _' + s(totalDayPct) + totalDayPct.toFixed(2) + '% (' + s(totalDayCZK) + fmt(totalDayCZK) + ' Kč) za včerejší den_\n\n'
+    + '   _' + s(totalDayPct) + totalDayPct.toFixed(2) + '% (' + s(totalDayCZK) + fmt(totalDayCZK) + ' Kč) za ' + (isMonday() ? 'páteční' : 'včerejší') + ' den_\n\n'
     + posLines.join('\n\n')
     + '\n\n' + sep + '\n\n'
     + '*💱 Kurzy CZK*\n'
     + '  EUR/CZK: *' + eurRate.toFixed(3) + '*  ' + s(eurDay) + eurDay.toFixed(2) + '%\n'
     + '  USD/CZK: *' + usdRate.toFixed(3) + '*  ' + s(usdDay) + usdDay.toFixed(2) + '%\n'
     + '\n' + sep + '\n\n'
-    + '*📊 Trhy včera*\n'
+    + '*📊 Trhy ' + (isMonday() ? 'v pátek' : 'včera') + '*\n'
     + idxLines.join('\n');
 
   process.stdout.write(output);
