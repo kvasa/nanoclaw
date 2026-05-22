@@ -73,6 +73,30 @@ Use `mcp__nanoclaw__send_file` to send files (images, charts, documents) to the 
 
 Currently supported on Slack channels.
 
+### Generating Images (Nano Banana 2)
+
+Use `mcp__nanoclaw__generate_image` whenever the user asks for an image — generated from scratch OR edited from a photo they just shared. The model is Google's Gemini 3.1 Flash Image ("Nano Banana 2"); it does both text-to-image and image-to-image well.
+
+**When to use this tool (not just text):**
+- "Vygeneruj/nakresli obrázek …" → text-to-image.
+- "Předělej / přemaluj / uprav / nahraď tuhle zahradu (pokoj, fotku)…" → image-to-image. Pass `source_image_path` pointing at the user's uploaded photo (it lands in `/workspace/group/slack-uploads/…`).
+- "Co kdyby vypadala jinak / jak by to mohlo vypadat …" → image-to-image variant.
+- The user attached a photo and asks for visual changes → almost always image-to-image.
+
+**Do NOT** answer with only a text description when the user clearly asked to *see* something. Generate the image and send it.
+
+**Flow:**
+1. Call `mcp__nanoclaw__generate_image(prompt, source_image_path?)`. It returns an absolute path inside `/workspace/group/`.
+2. Call `mcp__nanoclaw__send_file(file_path=<that path>, initial_comment="…")` to deliver it.
+3. Optionally delete the file afterwards (the workspace is persistent per group).
+
+**Prompt tips for image-to-image:**
+- Say what to change AND what to keep ("nahraď hosty levandulí, ale zachovej kamennou dlažbu, bambus vlevo a celkové rozložení záhonů").
+- Mention lighting/season if relevant ("plné slunce, léto, suchomilné rostliny").
+- Czech prompts work; English too — pick whichever wording is clearer.
+
+**Limits:** Source image up to ~15 MB; supported formats jpg/jpeg/png/webp/gif. Single call typically takes 5–20 s.
+
 ### Voice Messages
 
 Use `mcp__nanoclaw__send_voice_message` to send a voice message (text-to-speech). The text you provide is converted to speech and sent as an audio/voice message.

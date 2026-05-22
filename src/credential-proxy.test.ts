@@ -168,6 +168,43 @@ describe('credential-proxy', () => {
     expect(lastUpstreamHeaders['transfer-encoding']).toBeUndefined();
   });
 
+  // --- /mcp-creds endpoint ---
+
+  it('/mcp-creds includes GEMINI_API_KEY when present', async () => {
+    proxyPort = await startProxy({
+      ANTHROPIC_API_KEY: 'sk-ant',
+      GEMINI_API_KEY: 'AIza-test-key',
+      RHL_EMAIL: 'a@b.cz',
+    });
+
+    const { NANOCLAW_CREDS_TOKEN } = await import('./creds-token.js');
+    const res = await makeRequest(proxyPort, {
+      method: 'GET',
+      path: '/mcp-creds',
+      headers: { authorization: `Bearer ${NANOCLAW_CREDS_TOKEN}` },
+    });
+
+    expect(res.statusCode).toBe(200);
+    const body = JSON.parse(res.body);
+    expect(body.GEMINI_API_KEY).toBe('AIza-test-key');
+    expect(body.RHL_EMAIL).toBe('a@b.cz');
+  });
+
+  it('/mcp-creds rejects requests without the bearer token', async () => {
+    proxyPort = await startProxy({
+      ANTHROPIC_API_KEY: 'sk-ant',
+      GEMINI_API_KEY: 'AIza-test-key',
+    });
+
+    const res = await makeRequest(proxyPort, {
+      method: 'GET',
+      path: '/mcp-creds',
+    });
+
+    expect(res.statusCode).toBe(401);
+    expect(res.body).not.toContain('AIza');
+  });
+
   it('returns 502 when upstream is unreachable', async () => {
     Object.assign(mockEnv, {
       ANTHROPIC_API_KEY: 'sk-ant-real-key',

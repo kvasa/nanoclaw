@@ -72,6 +72,9 @@ export function startCredentialProxy(
           'CALDAV_BASE_URL',
           'GARMIN_EMAIL',
           'GARMIN_PASSWORD',
+          // Gemini API key (nano-banana image generation). Routed through the
+          // proxy so it never appears in `docker inspect` output.
+          'GEMINI_API_KEY',
         ]);
         const body = Buffer.from(JSON.stringify(mcpCreds));
         res.writeHead(200, {

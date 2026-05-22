@@ -842,6 +842,68 @@ Use available_groups.json to find the JID for a group. The folder name must be c
   },
 );
 
+// --- Image generation (Google Gemini "Nano Banana 2") ---
+
+import { generateImage } from './generate-image.js';
+
+server.tool(
+  'generate_image',
+  `Generate or edit an image with Google's Gemini "Nano Banana 2" model (gemini-3.1-flash-image-preview).
+
+USE WHEN the user asks you to:
+- "Vygeneruj/nakresli/udělej obrázek …" — text-to-image
+- "Předělej/přemaluj/uprav tuhle fotku …" — image-to-image (pass source_image_path)
+- "Co kdyby byla zahrada / pokoj / místnost takhle …" — visual variant of a photo they sent
+
+LIFECYCLE:
+1. The model writes an image into /workspace/group/. The tool returns the absolute path.
+2. Deliver it to the user with mcp__nanoclaw__send_file(file_path, initial_comment).
+3. Optional: keep the file if the user might iterate; otherwise delete it after sending.
+
+IMAGE-TO-IMAGE TIP: be specific about *what* should change ("keep the layout but swap hostas for lavender and add gravel pathways") — Nano Banana keeps unchanged regions intact when you tell it what to preserve.
+
+PROMPT LANGUAGE: Czech and English both work. Gemini follows Czech prompts fine.`,
+  {
+    prompt: z
+      .string()
+      .min(3)
+      .max(4000)
+      .describe(
+        'Natural-language description of the image to generate or the edit to apply. For edits, describe what to change AND what to preserve.',
+      ),
+    source_image_path: z
+      .string()
+      .optional()
+      .describe(
+        'Optional path to an existing image in the workspace (must start with /workspace/group/, /workspace/global/, /workspace/extra/, or /workspace/backups/). When provided, the model edits this image instead of generating from scratch.',
+      ),
+    output_filename: z
+      .string()
+      .optional()
+      .describe(
+        'Optional base filename (without directory). Only [a-zA-Z0-9._-] allowed. A timestamp is auto-appended for uniqueness. Defaults to "generated-image".',
+      ),
+  },
+  async (args) => {
+    const result = await generateImage(args);
+    if (result.status === 'error') {
+      return {
+        content: [{ type: 'text' as const, text: result.message }],
+        isError: true,
+      };
+    }
+    const nextStep = `Send it to the user with mcp__nanoclaw__send_file(file_path="${result.outputPath}", initial_comment="…").`;
+    return {
+      content: [
+        {
+          type: 'text' as const,
+          text: `Image written to ${result.outputPath} (${result.bytes} bytes, ${result.mime}).${result.caption ? '\n\nModel notes: ' + result.caption : ''}\n\n${nextStep}`,
+        },
+      ],
+    };
+  },
+);
+
 // Start the stdio transport
 const transport = new StdioServerTransport();
 await server.connect(transport);
