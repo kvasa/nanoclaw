@@ -842,12 +842,36 @@ async function main(): Promise<void> {
       const text = formatOutbound(rawText);
       if (text) await channel.sendMessage(jid, text);
     },
+    postTaskOpener: async (jid, text) => {
+      const channel = findChannel(channels, jid);
+      if (!channel) {
+        logger.warn({ jid }, 'No channel owns JID, cannot post task opener');
+        return undefined;
+      }
+      // Slack supports threading — capture the message ts so progress lands
+      // in its thread. Other channels just post the opener and skip threading.
+      if (channel instanceof SlackChannel) {
+        return channel.sendMessageWithTs(jid, text);
+      }
+      await channel.sendMessage(jid, text);
+      return undefined;
+    },
   });
   startIpcWatcher({
     sendMessage: (jid, text, threadTs) => {
       const channel = findChannel(channels, jid);
       if (!channel) throw new Error(`No channel for JID: ${jid}`);
       return channel.sendMessage(jid, text, threadTs);
+    },
+    postAnnouncement: async (jid, text) => {
+      const channel = findChannel(channels, jid);
+      if (!channel) throw new Error(`No channel for JID: ${jid}`);
+      // Slack returns the message ts for threading; other channels just post.
+      if (channel instanceof SlackChannel) {
+        return channel.sendMessageWithTs(jid, text);
+      }
+      await channel.sendMessage(jid, text);
+      return undefined;
     },
     sendEmailReply: gmailCh
       ? (threadJid, text): Promise<boolean> =>

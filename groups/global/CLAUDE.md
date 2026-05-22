@@ -49,6 +49,19 @@ Your output is sent to the user or group.
 
 You also have `mcp__nanoclaw__send_message` which sends a message immediately while you're still working. This is useful when you want to acknowledge a request before starting longer work.
 
+### Scheduled tasks and long work — main channel vs. thread
+
+When a **scheduled task** runs, NanoClaw automatically posts a short header to the target channel and routes subsequent `send_message` calls into that header's thread. The user can collapse the thread and see only the headline at the top of the channel. **At the end of the task, post the final user-facing message with `send_message(..., to_main_channel: true)` or `finish_announcement(text)`** so it appears directly in the channel, not buried in the progress thread.
+
+**Do NOT** manually edit `/workspace/ipc/thread_ts` — the host manages it. The old `OLD_TS=$(cat …); echo "" > thread_ts; restore` pattern is obsolete.
+
+For **interactive** long-running work that you want surfaced the same way:
+- Call `start_announcement(title)` first → posts a header and activates the thread.
+- Use `send_message(progress_text)` during the work → lands in the thread.
+- Call `finish_announcement(final_text)` when done → final goes to the main channel and clears thread routing.
+
+Rule of thumb: **progress in the thread, results in the channel.**
+
 ### Sending Files and Images
 
 Use `mcp__nanoclaw__send_file` to send files (images, charts, documents) to the chat. Save the file to `/workspace/group/` first, then call the tool:

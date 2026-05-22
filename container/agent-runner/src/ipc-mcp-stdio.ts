@@ -14,22 +14,42 @@ import { CronExpressionParser } from 'cron-parser';
 const IPC_DIR = '/workspace/ipc';
 const MESSAGES_DIR = path.join(IPC_DIR, 'messages');
 const TASKS_DIR = path.join(IPC_DIR, 'tasks');
+const INPUT_DIR = path.join(IPC_DIR, 'input');
+const THREAD_TS_FILE = path.join(IPC_DIR, 'thread_ts');
 
 // Context from environment variables (set by the agent runner)
 const chatJid = process.env.NANOCLAW_CHAT_JID!;
 const groupFolder = process.env.NANOCLAW_GROUP_FOLDER!;
 const isMain = process.env.NANOCLAW_IS_MAIN === '1';
 function getThreadTs(): string | undefined {
-  const threadTsFile = path.join(IPC_DIR, 'thread_ts');
   try {
-    if (fs.existsSync(threadTsFile)) {
-      const ts = fs.readFileSync(threadTsFile, 'utf-8').trim();
+    if (fs.existsSync(THREAD_TS_FILE)) {
+      const ts = fs.readFileSync(THREAD_TS_FILE, 'utf-8').trim();
       if (ts) return ts;
     }
   } catch {
     // ignore
   }
   return process.env.NANOCLAW_THREAD_TS;
+}
+
+function setThreadTsFile(ts: string | undefined): void {
+  try {
+    if (ts) {
+      fs.mkdirSync(IPC_DIR, { recursive: true });
+      const tempPath = `${THREAD_TS_FILE}.tmp`;
+      fs.writeFileSync(tempPath, ts);
+      fs.renameSync(tempPath, THREAD_TS_FILE);
+    } else {
+      try {
+        fs.unlinkSync(THREAD_TS_FILE);
+      } catch {
+        /* file may not exist */
+      }
+    }
+  } catch {
+    // best-effort — agent can still progress without thread routing
+  }
 }
 
 function writeIpcFile(dir: string, data: object): string {
@@ -53,18 +73,29 @@ const server = new McpServer({
 
 server.tool(
   'send_message',
-  "Send a message to the user or group immediately while you're still running. Use this for progress updates or to send multiple messages. You can call this multiple times.",
+  `Send a message to the user or group immediately while you're still running. Use this for progress updates or to send multiple messages. You can call this multiple times.
+
+THREADING (Slack only):
+- By default, messages route into the current thread when one is active (Slack only). Progress updates from an active announcement or a scheduled-task opener land in that thread automatically.
+- Set \`to_main_channel: true\` for messages that should appear directly in the main channel instead of the thread — typically the final result of a scheduled task or a long-running announcement. Non-Slack channels ignore this flag.`,
   {
     text: z.string().describe('The message text to send'),
     sender: z.string().optional().describe('Your role/identity name (e.g. "Researcher"). When set, messages appear from a dedicated bot in Telegram.'),
+    to_main_channel: z
+      .boolean()
+      .optional()
+      .describe(
+        'Force the message to the main channel even when a thread is active. Use for final results / outcomes the user should see at the channel top level. Defaults to false (use active thread if present).',
+      ),
   },
   async (args) => {
+    const threadTs = args.to_main_channel ? undefined : getThreadTs();
     const data: Record<string, string | undefined> = {
       type: 'message',
       chatJid,
       text: args.text,
       sender: args.sender || undefined,
-      threadTs: getThreadTs() || undefined,
+      threadTs: threadTs || undefined,
       groupFolder,
       timestamp: new Date().toISOString(),
     };
@@ -632,6 +663,145 @@ Query examples:
     return {
       content: [{ type: 'text' as const, text: 'Timeout waiting for Gmail response. Gmail may not be connected.' }],
       isError: true,
+    };
+  },
+);
+
+server.tool(
+  'start_announcement',
+  `Open an "announcement" in the current chat: post a header message to the main channel and route all subsequent send_message calls into that header's thread.
+
+USE THIS FOR: long-running work the user should be aware of (multi-minute research, batched processing, build-and-test runs). Lets the user see "agent is doing X" at the top of the channel without flooding it with mid-progress noise.
+
+LIFECYCLE:
+1. Call start_announcement(title) → header message posted; thread is now active.
+2. Call send_message(text) as you work → progress lands in the thread (Slack).
+3. Call finish_announcement(text) when done → final result posted to the main channel (not the thread) and the thread routing is cleared.
+
+CHANNEL SUPPORT: Slack supports threading natively. On other channels (WhatsApp/Telegram/etc.) the header still posts but progress routing is a no-op — call finish_announcement with the final text when you're done.`,
+  {
+    title: z
+      .string()
+      .describe(
+        'Short header describing what you are about to do (e.g. "Sestavuji denní finanční report").',
+      ),
+  },
+  async (args) => {
+    const requestId = crypto.randomUUID();
+    const responseFile = path.join(
+      INPUT_DIR,
+      `announce_${requestId}.json`,
+    );
+    const TIMEOUT_MS = 15_000;
+    const POLL_MS = 250;
+
+    const data = {
+      type: 'announce_start',
+      chatJid,
+      text: args.title,
+      requestId,
+      groupFolder,
+      timestamp: new Date().toISOString(),
+    };
+
+    writeIpcFile(MESSAGES_DIR, data);
+
+    const deadline = Date.now() + TIMEOUT_MS;
+    while (Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, POLL_MS));
+      if (fs.existsSync(responseFile)) {
+        try {
+          const response: { requestId: string; threadTs?: string } = JSON.parse(
+            fs.readFileSync(responseFile, 'utf-8'),
+          );
+          fs.unlinkSync(responseFile);
+          if (response.threadTs) {
+            setThreadTsFile(response.threadTs);
+            return {
+              content: [
+                {
+                  type: 'text' as const,
+                  text: `Announcement posted. Progress messages will appear in its thread (ts=${response.threadTs}). Call finish_announcement when done.`,
+                },
+              ],
+            };
+          }
+          // Non-Slack channel — message posted but no thread. Clear stale ts.
+          setThreadTsFile(undefined);
+          return {
+            content: [
+              {
+                type: 'text' as const,
+                text: 'Announcement posted, but this channel does not support threading. Final messages should still use finish_announcement to mark completion.',
+              },
+            ],
+          };
+        } catch (err) {
+          return {
+            content: [
+              {
+                type: 'text' as const,
+                text: `Error reading announce response: ${err instanceof Error ? err.message : String(err)}`,
+              },
+            ],
+            isError: true,
+          };
+        }
+      }
+    }
+
+    return {
+      content: [
+        {
+          type: 'text' as const,
+          text: 'Timeout waiting for announcement to be posted. The host may be busy — progress messages may still arrive without a thread.',
+        },
+      ],
+      isError: true,
+    };
+  },
+);
+
+server.tool(
+  'finish_announcement',
+  `Close the announcement opened by start_announcement: post the final result to the main channel (NOT the thread) and clear thread routing so subsequent messages also go to the main channel.
+
+USE THIS AT THE END of any work opened with start_announcement, or any scheduled task whose result should land in the main channel rather than the progress thread.
+
+It is safe to call this even if no announcement was started — it will simply post the message to the main channel and ensure thread routing is cleared.`,
+  {
+    text: z
+      .string()
+      .describe('The final user-facing message — goes to the main channel.'),
+    sender: z
+      .string()
+      .optional()
+      .describe(
+        'Optional role/identity name (e.g. "Researcher"). Same semantics as send_message.',
+      ),
+  },
+  async (args) => {
+    const data: Record<string, string | undefined> = {
+      type: 'message',
+      chatJid,
+      text: args.text,
+      sender: args.sender || undefined,
+      // Explicitly omit threadTs so the message lands in the main channel.
+      groupFolder,
+      timestamp: new Date().toISOString(),
+    };
+
+    writeIpcFile(MESSAGES_DIR, data);
+    // Clear the thread routing so any later send_message also goes to main.
+    setThreadTsFile(undefined);
+
+    return {
+      content: [
+        {
+          type: 'text' as const,
+          text: 'Final message posted to the main channel and thread routing cleared.',
+        },
+      ],
     };
   },
 );

@@ -226,6 +226,13 @@ function buildVolumeMounts(
   // Copy agent-runner source into a per-group writable location so agents
   // can customize it (add tools, change behavior) without affecting other
   // groups. Recompiled on container startup via entrypoint.sh.
+  //
+  // Framework files (index.ts, ipc-mcp-stdio.ts) are re-synced every spawn so
+  // host-side improvements actually reach existing containers — previously the
+  // snapshot was a one-time copy on first spawn, which silently stranded every
+  // group on whatever version of the framework existed when that group was
+  // first activated. Any *other* files in the snapshot (agent-added tools,
+  // experiments) are preserved.
   const agentRunnerSrc = path.join(
     projectRoot,
     'container',
@@ -238,8 +245,16 @@ function buildVolumeMounts(
     group.folder,
     'agent-runner-src',
   );
-  if (!fs.existsSync(groupAgentRunnerDir) && fs.existsSync(agentRunnerSrc)) {
-    fs.cpSync(agentRunnerSrc, groupAgentRunnerDir, { recursive: true });
+  if (fs.existsSync(agentRunnerSrc)) {
+    fs.mkdirSync(groupAgentRunnerDir, { recursive: true });
+    for (const file of fs.readdirSync(agentRunnerSrc)) {
+      const src = path.join(agentRunnerSrc, file);
+      const stat = fs.statSync(src);
+      // Only sync top-level files (the framework). Leave any subdirs the
+      // agent may have created in place — they belong to the group.
+      if (!stat.isFile()) continue;
+      fs.copyFileSync(src, path.join(groupAgentRunnerDir, file));
+    }
   }
   mounts.push({
     hostPath: groupAgentRunnerDir,

@@ -59,6 +59,16 @@ export const IpcReadEmailsSchema = z.object({
     .regex(/^[a-zA-Z0-9_-]+$/),
 });
 
+export const IpcAnnounceStartSchema = z.object({
+  type: z.literal('announce_start'),
+  chatJid: z.string(),
+  text: z.string().min(1).max(2000),
+  requestId: z
+    .string()
+    .max(128)
+    .regex(/^[a-zA-Z0-9_-]+$/),
+});
+
 export const IpcFileMessageSchema = z.discriminatedUnion('type', [
   IpcMessageSchema,
   IpcSendFileSchema,
@@ -66,6 +76,7 @@ export const IpcFileMessageSchema = z.discriminatedUnion('type', [
   IpcSendEmailSchema,
   IpcComposeEmailSchema,
   IpcReadEmailsSchema,
+  IpcAnnounceStartSchema,
 ]);
 
 // --- IPC Task Schemas (processTaskIpc) ---

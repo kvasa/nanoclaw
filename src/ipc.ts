@@ -9,6 +9,7 @@ import { createTask, deleteTask, getTaskById, updateTask } from './db.js';
 import { isValidGroupFolder } from './group-folder.js';
 import { logger } from './logger.js';
 import {
+  IpcAnnounceStartSchema,
   IpcCancelTaskSchema,
   IpcFileMessageSchema,
   IpcPauseTaskSchema,
@@ -24,6 +25,13 @@ import { RegisteredGroup, SendFileOptions } from './types.js';
 
 export interface IpcDeps {
   sendMessage: (jid: string, text: string, threadTs?: string) => Promise<void>;
+  /**
+   * Post an announcement header to the channel and return the resulting
+   * message ts (Slack) so the agent can route progress into its thread.
+   * Channels without threading should still post the message and return
+   * undefined.
+   */
+  postAnnouncement?: (jid: string, text: string) => Promise<string | undefined>;
   sendEmailReply?: (threadJid: string, text: string) => Promise<boolean>;
   composeEmail?: (
     to: string,
@@ -184,6 +192,15 @@ export function startIpcWatcher(deps: IpcDeps): void {
                       await deps.sendMessage(mainJid, feedback);
                     }
                   }
+                } else if (data.type === 'announce_start') {
+                  await processAnnounceStartIpc(
+                    raw,
+                    sourceGroup,
+                    isMain,
+                    deps,
+                    ipcBaseDir,
+                    registeredGroups,
+                  );
                 } else if (data.type === 'read_emails') {
                   const parsed = IpcReadEmailsSchema.safeParse(raw);
                   if (!parsed.success) {
@@ -361,6 +378,74 @@ export function startIpcWatcher(deps: IpcDeps): void {
 
   processIpcFiles();
   logger.info('IPC watcher started (per-group namespaces)');
+}
+
+/**
+ * Process an announce_start IPC message: authorize, ask the host to post
+ * the announcement header, and write the response file the agent polls for.
+ * Exported so it can be unit-tested without the full IPC watcher loop.
+ */
+export async function processAnnounceStartIpc(
+  raw: unknown,
+  sourceGroup: string,
+  isMain: boolean,
+  deps: IpcDeps,
+  ipcBaseDir: string,
+  registeredGroups: Record<string, RegisteredGroup>,
+): Promise<{
+  status: 'ok' | 'invalid_schema' | 'unauthorized' | 'path_traversal';
+  threadTs?: string;
+  responseFile?: string;
+}> {
+  const parsed = IpcAnnounceStartSchema.safeParse(raw);
+  if (!parsed.success) {
+    logger.warn(
+      { sourceGroup, errors: parsed.error.issues },
+      'Invalid announce_start schema',
+    );
+    return { status: 'invalid_schema' };
+  }
+  const { chatJid, text, requestId } = parsed.data;
+  const targetGroup = registeredGroups[chatJid];
+  const authorized =
+    isMain || (targetGroup && targetGroup.folder === sourceGroup);
+  if (!authorized) {
+    logger.warn(
+      { sourceGroup, chatJid },
+      'Unauthorized announce_start attempt blocked',
+    );
+    return { status: 'unauthorized' };
+  }
+
+  let threadTs: string | undefined;
+  try {
+    threadTs = deps.postAnnouncement
+      ? await deps.postAnnouncement(chatJid, text)
+      : undefined;
+  } catch (err) {
+    logger.warn({ sourceGroup, chatJid, err }, 'postAnnouncement failed');
+  }
+  if (!deps.postAnnouncement) {
+    // Fallback: post via sendMessage; no thread routing available.
+    await deps.sendMessage(chatJid, text).catch(() => {});
+  }
+
+  const responseDir = path.join(ipcBaseDir, sourceGroup, 'input');
+  fs.mkdirSync(responseDir, { recursive: true });
+  const responseFile = path.join(responseDir, `announce_${requestId}.json`);
+  if (!responseFile.startsWith(responseDir + path.sep)) {
+    logger.warn(
+      { requestId, sourceGroup },
+      'announce_start: requestId path traversal attempt blocked',
+    );
+    return { status: 'path_traversal' };
+  }
+  fs.writeFileSync(responseFile, JSON.stringify({ requestId, threadTs }));
+  logger.info(
+    { chatJid, sourceGroup, threadTs },
+    'IPC announce_start resolved',
+  );
+  return { status: 'ok', threadTs, responseFile };
 }
 
 export async function processTaskIpc(

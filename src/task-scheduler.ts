@@ -78,9 +78,41 @@ export interface SchedulerDependencies {
     groupFolder: string,
   ) => void;
   sendMessage: (jid: string, text: string) => Promise<void>;
+  /**
+   * Post an opener message to the target channel and return its message ts
+   * (used as the thread root for progress updates). For channels that don't
+   * support threading (WhatsApp/Telegram/etc.), this should still post the
+   * message but may return undefined.
+   *
+   * When undefined is returned the scheduler still clears any stale thread_ts
+   * so progress updates don't land in an unrelated thread.
+   */
+  postTaskOpener?: (jid: string, text: string) => Promise<string | undefined>;
 }
 
-async function runTask(
+function summarizeTaskPrompt(prompt: string): string {
+  // Strip leading whitespace and take the first non-empty line as the headline.
+  const lines = prompt
+    .split('\n')
+    .map((l) => l.trim())
+    .filter(Boolean);
+  const head = lines[0] || prompt.trim();
+  const max = 140;
+  return head.length > max ? head.slice(0, max) + '…' : head;
+}
+
+export function buildTaskOpenerText(task: ScheduledTask): string {
+  const headline = summarizeTaskPrompt(task.prompt);
+  const schedule =
+    task.schedule_type === 'cron'
+      ? `cron \`${task.schedule_value}\``
+      : task.schedule_type === 'interval'
+        ? `každých ${task.schedule_value}ms`
+        : 'jednorázový';
+  return `🤖 Spouštím naplánovaný úkol _${headline}_ (${schedule})\n_Průběžné kroky pošlu do vlákna této zprávy. Výsledek přijde sem do kanálu._`;
+}
+
+export async function runTask(
   task: ScheduledTask,
   deps: SchedulerDependencies,
 ): Promise<void> {
@@ -159,6 +191,29 @@ async function runTask(
   const sessionId =
     task.context_mode === 'group' ? sessions[task.group_folder] : undefined;
 
+  // Post a fresh opener to the target channel BEFORE the container starts.
+  // Progress updates from the container route into this message's thread.
+  // The final result (sent via deps.sendMessage below) lands in the main
+  // channel, not the thread. This pattern was previously DIY-implemented in
+  // task prompts via shell hacks on /workspace/ipc/thread_ts.
+  let openerTs: string | undefined;
+  if (deps.postTaskOpener) {
+    try {
+      openerTs = await deps.postTaskOpener(
+        task.chat_jid,
+        buildTaskOpenerText(task),
+      );
+    } catch (err) {
+      logger.warn(
+        { taskId: task.id, err },
+        'Failed to post task opener, continuing without thread',
+      );
+    }
+  }
+  // Always overwrite/clear thread_ts so progress doesn't leak into a stale
+  // interactive thread from a previous session.
+  deps.queue.updateThreadTs(task.group_folder, openerTs);
+
   // After the task produces a result, close the container promptly.
   // Tasks are single-turn — no need to wait IDLE_TIMEOUT (30 min) for the
   // query loop to time out. A short delay handles any final MCP calls.
@@ -185,6 +240,7 @@ async function runTask(
         isScheduledTask: true,
         assistantName: ASSISTANT_NAME,
         enabledMcpServers: group.containerConfig?.enabledMcpServers,
+        triggerMessageTs: openerTs,
       },
       (proc, containerName) =>
         deps.onProcess(task.chat_jid, proc, containerName, task.group_folder),

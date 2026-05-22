@@ -663,6 +663,13 @@ async function runQuery(
       pathToClaudeCodeExecutable: CLAUDE_EXECUTABLE_PATH,
       permissionMode: 'bypassPermissions',
       allowDangerouslySkipPermissions: true,
+      // Belt-and-suspenders: after auto-compact the SDK resets permissionMode
+      // back to default, so writes get denied mid-session. canUseTool is
+      // re-consulted for every tool call and survives compaction.
+      canUseTool: async (_toolName, input) => ({
+        behavior: 'allow',
+        updatedInput: input,
+      }),
       settingSources: ['project', 'user'],
       mcpServers: mcpServers,
       agentProgressSummaries: true,

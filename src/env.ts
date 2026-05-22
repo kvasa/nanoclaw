@@ -2,6 +2,17 @@ import fs from 'fs';
 import path from 'path';
 import { getSecret, isKeystoreAvailable, KEYSTORE_KEYS } from './keystore.js';
 
+// Keys we've already warned about (once-per-process). readEnvFile is called
+// every IPC poll, every container spawn, every MCP request — without this
+// guard the error log gets flooded with thousands of duplicate WARN lines per
+// hour. (See: nanoclaw.error.log was ~99% these warnings.)
+const warnedKeys = new Set<string>();
+
+/** @internal — for tests only */
+export function _resetEnvWarnings(): void {
+  warnedKeys.clear();
+}
+
 /**
  * Parse the .env file and return values for the requested keys.
  * Does NOT load anything into process.env — callers decide what to
@@ -55,7 +66,8 @@ export function readEnvFile(keys: string[]): Record<string, string> {
     }
     if (value) {
       result[key] = value;
-      if (KEYSTORE_KEYS.has(key)) {
+      if (KEYSTORE_KEYS.has(key) && !warnedKeys.has(key)) {
+        warnedKeys.add(key);
         process.stderr.write(
           `[nanoclaw] WARN: ${key} loaded from .env — consider migrating: node scripts/setup-keystore.mjs\n`,
         );

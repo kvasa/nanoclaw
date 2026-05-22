@@ -1,4 +1,8 @@
-import { describe, it, expect, beforeEach } from 'vitest';
+import fs from 'fs';
+import os from 'os';
+import path from 'path';
+
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 
 import {
   _initTestDatabase,
@@ -8,7 +12,7 @@ import {
   getTaskById,
   setRegisteredGroup,
 } from './db.js';
-import { processTaskIpc, IpcDeps } from './ipc.js';
+import { processAnnounceStartIpc, processTaskIpc, IpcDeps } from './ipc.js';
 import { RegisteredGroup } from './types.js';
 
 // Set up registered groups used across tests
@@ -718,5 +722,217 @@ describe('register_group success', () => {
     );
 
     expect(getRegisteredGroup('partial@g.us')).toBeUndefined();
+  });
+});
+
+// --- announce_start IPC ---
+// Verifies the host-side handling for the start_announcement MCP tool:
+//   • authorizes the caller against the target chat
+//   • calls deps.postAnnouncement to post the header
+//   • writes the response file the agent polls for
+//   • blocks path-traversal via the requestId
+
+describe('processAnnounceStartIpc', () => {
+  let tmpRoot: string;
+  let ipcBaseDir: string;
+
+  beforeEach(() => {
+    tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'nanoclaw-announce-'));
+    ipcBaseDir = path.join(tmpRoot, 'ipc');
+    fs.mkdirSync(ipcBaseDir, { recursive: true });
+  });
+
+  afterEach(() => {
+    fs.rmSync(tmpRoot, { recursive: true, force: true });
+  });
+
+  function makeDeps(overrides: Partial<IpcDeps> = {}): IpcDeps {
+    return {
+      sendMessage: vi.fn(async () => {}),
+      sendFile: vi.fn(async () => {}),
+      sendVoice: vi.fn(async () => {}),
+      registeredGroups: () => groups,
+      registerGroup: () => {},
+      syncGroups: async () => {},
+      getAvailableGroups: () => [],
+      writeGroupsSnapshot: () => {},
+      ...overrides,
+    };
+  }
+
+  it('posts the announcement and writes the response file with the returned threadTs', async () => {
+    const postAnnouncement = vi.fn(
+      async (_jid: string, _text: string): Promise<string | undefined> =>
+        'TS_ABC',
+    );
+    const sourceGroup = 'other-group';
+    const requestId = 'req-abc-123';
+    fs.mkdirSync(path.join(ipcBaseDir, sourceGroup, 'input'), {
+      recursive: true,
+    });
+
+    const result = await processAnnounceStartIpc(
+      {
+        type: 'announce_start',
+        chatJid: 'other@g.us',
+        text: 'Researching your question…',
+        requestId,
+      },
+      sourceGroup,
+      false,
+      makeDeps({ postAnnouncement }),
+      ipcBaseDir,
+      groups,
+    );
+
+    expect(result.status).toBe('ok');
+    expect(result.threadTs).toBe('TS_ABC');
+    expect(postAnnouncement).toHaveBeenCalledWith(
+      'other@g.us',
+      'Researching your question…',
+    );
+
+    const responseFile = path.join(
+      ipcBaseDir,
+      sourceGroup,
+      'input',
+      `announce_${requestId}.json`,
+    );
+    expect(fs.existsSync(responseFile)).toBe(true);
+    const body = JSON.parse(fs.readFileSync(responseFile, 'utf-8'));
+    expect(body).toEqual({ requestId, threadTs: 'TS_ABC' });
+  });
+
+  it('blocks unauthorized attempts (non-main group targeting another chat)', async () => {
+    const postAnnouncement = vi.fn(
+      async (): Promise<string | undefined> => 'TS_X',
+    );
+    const result = await processAnnounceStartIpc(
+      {
+        type: 'announce_start',
+        chatJid: 'third@g.us', // belongs to third-group, not other-group
+        text: 'Sneaky',
+        requestId: 'req-xyz',
+      },
+      'other-group', // source identity
+      false,
+      makeDeps({ postAnnouncement }),
+      ipcBaseDir,
+      groups,
+    );
+
+    expect(result.status).toBe('unauthorized');
+    expect(postAnnouncement).not.toHaveBeenCalled();
+  });
+
+  it('allows the main group to announce into any chat', async () => {
+    const postAnnouncement = vi.fn(
+      async (): Promise<string | undefined> => 'TS_MAIN',
+    );
+    fs.mkdirSync(path.join(ipcBaseDir, 'whatsapp_main', 'input'), {
+      recursive: true,
+    });
+
+    const result = await processAnnounceStartIpc(
+      {
+        type: 'announce_start',
+        chatJid: 'third@g.us',
+        text: 'Main acting on third',
+        requestId: 'req-main',
+      },
+      'whatsapp_main',
+      true,
+      makeDeps({ postAnnouncement }),
+      ipcBaseDir,
+      groups,
+    );
+
+    expect(result.status).toBe('ok');
+    expect(result.threadTs).toBe('TS_MAIN');
+  });
+
+  it('still writes a response file (threadTs=undefined) when the channel lacks threading', async () => {
+    const postAnnouncement = vi.fn(
+      async (): Promise<string | undefined> => undefined, // e.g. WhatsApp
+    );
+    const sourceGroup = 'other-group';
+    fs.mkdirSync(path.join(ipcBaseDir, sourceGroup, 'input'), {
+      recursive: true,
+    });
+
+    const result = await processAnnounceStartIpc(
+      {
+        type: 'announce_start',
+        chatJid: 'other@g.us',
+        text: 'Working on it',
+        requestId: 'req-nothread',
+      },
+      sourceGroup,
+      false,
+      makeDeps({ postAnnouncement }),
+      ipcBaseDir,
+      groups,
+    );
+
+    expect(result.status).toBe('ok');
+    expect(result.threadTs).toBeUndefined();
+    const body = JSON.parse(
+      fs.readFileSync(
+        path.join(
+          ipcBaseDir,
+          sourceGroup,
+          'input',
+          'announce_req-nothread.json',
+        ),
+        'utf-8',
+      ),
+    );
+    expect(body.threadTs).toBeUndefined();
+  });
+
+  it('rejects malformed requestId via schema (prevents path traversal)', async () => {
+    const postAnnouncement = vi.fn();
+    const result = await processAnnounceStartIpc(
+      {
+        type: 'announce_start',
+        chatJid: 'other@g.us',
+        text: 'Working',
+        requestId: '../../etc/passwd', // contains chars rejected by /^[a-zA-Z0-9_-]+$/
+      },
+      'other-group',
+      false,
+      makeDeps({ postAnnouncement }),
+      ipcBaseDir,
+      groups,
+    );
+
+    expect(result.status).toBe('invalid_schema');
+    expect(postAnnouncement).not.toHaveBeenCalled();
+  });
+
+  it('falls back to sendMessage when no postAnnouncement is wired (does not throw)', async () => {
+    const sendMessage = vi.fn(async () => {});
+    const sourceGroup = 'other-group';
+    fs.mkdirSync(path.join(ipcBaseDir, sourceGroup, 'input'), {
+      recursive: true,
+    });
+
+    const result = await processAnnounceStartIpc(
+      {
+        type: 'announce_start',
+        chatJid: 'other@g.us',
+        text: 'Working',
+        requestId: 'req-fallback',
+      },
+      sourceGroup,
+      false,
+      makeDeps({ sendMessage }),
+      ipcBaseDir,
+      groups,
+    );
+
+    expect(result.status).toBe('ok');
+    expect(result.threadTs).toBeUndefined();
+    expect(sendMessage).toHaveBeenCalledWith('other@g.us', 'Working');
   });
 });
