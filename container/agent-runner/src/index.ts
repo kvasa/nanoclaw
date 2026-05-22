@@ -243,10 +243,27 @@ function describeToolCall(
     case 'Task':
     case 'TeamCreate':
       return `🔀 Spouštím podúkol…`;
+    case 'mcp__nanoclaw__generate_image': {
+      const promptText = truncate(String(input.prompt || ''), 80);
+      const hasSource = !!input.source_image_path;
+      return hasSource
+        ? `🎨 Generuji obrázek (úprava fotky): _${promptText}_`
+        : `🎨 Generuji obrázek: _${promptText}_`;
+    }
     default:
-      // MCP tools, NanoClaw tools, etc. — skip
+      // MCP tools we don't have a dedicated label for — skip
       return null;
   }
+}
+
+/**
+ * Tools where the "🤔 Přemýšlím…" follow-up after tool_result is redundant
+ * because the tool itself already produced a user-visible progress message
+ * (e.g. generate_image takes ~15 s and we already announced it).
+ */
+function shouldSuppressThinkingAfter(toolName: string | undefined): boolean {
+  if (!toolName) return false;
+  return toolName === 'mcp__nanoclaw__generate_image';
 }
 
 function getSessionSummary(
@@ -623,6 +640,7 @@ async function runQuery(
 
   let sentComposingProgress = false;
   let lastBlockType: 'tool_use' | 'tool_result' | 'text' | null = null;
+  let lastToolName: string | undefined;
   const lastTaskProgressAt = new Map<string, number>();
   const TASK_PROGRESS_MIN_INTERVAL_MS = 15000;
   for await (const message of query({
@@ -721,6 +739,7 @@ async function runQuery(
             `[tool_call] ${block.name}(${trunc(JSON.stringify(block.input ?? {}), 300)})`,
           );
           lastBlockType = 'tool_use';
+          lastToolName = block.name as string;
           const progressText = describeToolCall(
             block.name as string,
             (block.input as Record<string, unknown>) ?? {},
@@ -788,11 +807,18 @@ async function runQuery(
       const st = (message as { status?: string }).status;
       log(`[status] ${st}`);
       if (st === 'requesting' && lastBlockType === 'tool_result') {
-        sendProgressUpdate(
-          containerInput.chatJid,
-          containerInput.groupFolder,
-          '🤔 Přemýšlím…',
-        );
+        // After tools that already produced their own progress label (e.g.
+        // generate_image — "🎨 Generuji obrázek…"), the generic "🤔 Přemýšlím…"
+        // is redundant and confusing: the user has just been told the agent
+        // is generating an image, then immediately sees a "thinking" message
+        // before the file arrives.
+        if (!shouldSuppressThinkingAfter(lastToolName)) {
+          sendProgressUpdate(
+            containerInput.chatJid,
+            containerInput.groupFolder,
+            '🤔 Přemýšlím…',
+          );
+        }
         lastBlockType = 'text';
       } else if (st === 'compacting') {
         sendProgressUpdate(

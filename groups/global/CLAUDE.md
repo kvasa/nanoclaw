@@ -55,12 +55,18 @@ When a **scheduled task** runs, NanoClaw automatically posts a short header to t
 
 **Do NOT** manually edit `/workspace/ipc/thread_ts` — the host manages it. The old `OLD_TS=$(cat …); echo "" > thread_ts; restore` pattern is obsolete.
 
-For **interactive** long-running work that you want surfaced the same way:
-- Call `start_announcement(title)` first → posts a header and activates the thread.
-- Use `send_message(progress_text)` during the work → lands in the thread.
-- Call `finish_announcement(final_text)` when done → final goes to the main channel and clears thread routing.
+### When NOT to use start_announcement
 
-Rule of thumb: **progress in the thread, results in the channel.**
+**Default behavior in interactive conversations: STAY in the user's thread. Do not call `start_announcement`.** When a human writes to you in Slack, NanoClaw is already routing your progress messages into the thread of their original message. Opening a *new* top-level message in the channel ("Generuji 3 návrhy…") breaks that flow — the user expected everything to appear under their message.
+
+Use `start_announcement` ONLY when:
+- The work is *unsolicited* (you're delivering something the user didn't just ask about — e.g. a scheduled report — although scheduled tasks already have an auto-opener so you don't need to call it manually there either).
+- The user explicitly says "founduj announcement / dej to jako samostatnou hlavičku v kanálu".
+- You are NOT in a thread (rare; means there is no user message to anchor to).
+
+For everything else — including multi-step jobs like "vygeneruj 3 návrhy a pošli mi je" — just use `send_message` and `send_file` directly. They will land in the active thread, exactly where the user is looking.
+
+Rule of thumb: **progress in the thread, results in the channel** applies to scheduled tasks. For interactive chat, the rule is simpler: **stay in the thread the user is talking to you in.**
 
 ### Sending Files and Images
 

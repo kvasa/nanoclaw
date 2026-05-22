@@ -669,16 +669,18 @@ Query examples:
 
 server.tool(
   'start_announcement',
-  `Open an "announcement" in the current chat: post a header message to the main channel and route all subsequent send_message calls into that header's thread.
+  `Open an "announcement" in the current chat: post a header message to the MAIN CHANNEL (NOT the user's thread) and route all subsequent send_message calls into the new announcement's own thread.
 
-USE THIS FOR: long-running work the user should be aware of (multi-minute research, batched processing, build-and-test runs). Lets the user see "agent is doing X" at the top of the channel without flooding it with mid-progress noise.
+⚠️ DO NOT CALL THIS FROM AN INTERACTIVE CONVERSATION. If a human just wrote to you and you are replying, you are already in their thread — your progress messages will land there automatically. Opening a new top-level message ("Generuji 3 návrhy…") interrupts the conversation and confuses the user. Just use send_message + send_file directly; they stay in the active thread.
 
-LIFECYCLE:
-1. Call start_announcement(title) → header message posted; thread is now active.
-2. Call send_message(text) as you work → progress lands in the thread (Slack).
-3. Call finish_announcement(text) when done → final result posted to the main channel (not the thread) and the thread routing is cleared.
+USE THIS ONLY FOR truly unsolicited work the user isn't already watching — for example, a long autonomous job you decided to start without being asked. In practice, scheduled tasks already have an auto-opener and don't need this tool either, so the right answer is almost always: don't call start_announcement.
 
-CHANNEL SUPPORT: Slack supports threading natively. On other channels (WhatsApp/Telegram/etc.) the header still posts but progress routing is a no-op — call finish_announcement with the final text when you're done.`,
+LIFECYCLE (when you *do* need it):
+1. Call start_announcement(title) → header message posted to the main channel; new thread is now active.
+2. Call send_message(text) as you work → progress lands in that announcement's thread.
+3. Call finish_announcement(text) when done → final result posted to the main channel and thread routing cleared.
+
+CHANNEL SUPPORT: Slack supports threading natively. On other channels (WhatsApp/Telegram/etc.) the header still posts but progress routing is a no-op.`,
   {
     title: z
       .string()
