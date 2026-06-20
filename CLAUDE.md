@@ -2,6 +2,8 @@
 
 Personal Claude assistant. See [README.md](README.md) for philosophy and setup. See [docs/REQUIREMENTS.md](docs/REQUIREMENTS.md) for architecture decisions.
 
+> **Architektura, technologie a prioritizovaný backlog zlepšení (ověřený proti kódu):** [docs/ANALYSIS.md](docs/ANALYSIS.md). Než začneš na něčem pracovat, projdi `docs/` (zejm. `ANALYSIS.md`, `nanoclaw-architecture-final.md`, `SECURITY.md`, `SPEC.md`); u vyřešených nálezů aktualizuj sloupec **Stav** v `ANALYSIS.md`.
+
 ## Quick Context
 
 Single Node.js process that connects to WhatsApp, routes messages to Claude Agent SDK running in containers (Linux VMs). Each group has isolated filesystem and memory.

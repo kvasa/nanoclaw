@@ -69,6 +69,25 @@ export function readonlyMountArgs(
   return ['-v', `${hostPath}:${containerPath}:ro`];
 }
 
+/**
+ * Returns CLI args capping a container's resources. Empty values disable the
+ * corresponding limit. `--pids-limit` is Docker-only — Apple Container has no
+ * equivalent flag, so it is omitted on that runtime.
+ */
+export function resourceLimitArgs(limits: {
+  memory?: string;
+  cpus?: string;
+  pidsLimit?: string;
+}): string[] {
+  const args: string[] = [];
+  if (limits.memory) args.push('--memory', limits.memory);
+  if (limits.cpus) args.push('--cpus', limits.cpus);
+  if (limits.pidsLimit && CONTAINER_RUNTIME_BIN === 'docker') {
+    args.push('--pids-limit', limits.pidsLimit);
+  }
+  return args;
+}
+
 /** Returns the args to stop a container by name (safe, no shell interpolation). */
 export function stopContainerArgs(name: string): string[] {
   return [CONTAINER_RUNTIME_BIN, 'stop', name];

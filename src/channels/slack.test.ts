@@ -44,6 +44,7 @@ const appRef = vi.hoisted(() => ({ current: null as any }));
 vi.mock('@slack/bolt', () => ({
   App: class MockApp {
     eventHandlers = new Map<string, Handler>();
+    actionHandlers: Array<{ pattern: string | RegExp; handler: Handler }> = [];
     token: string;
     appToken: string;
 
@@ -80,6 +81,10 @@ vi.mock('@slack/bolt', () => ({
 
     event(name: string, handler: Handler) {
       this.eventHandlers.set(name, handler);
+    }
+
+    action(pattern: string | RegExp, handler: Handler) {
+      this.actionHandlers.push({ pattern, handler });
     }
 
     async start() {}
@@ -1275,6 +1280,7 @@ describe('SlackChannel', () => {
         'fetch',
         vi.fn().mockResolvedValue({
           ok: true,
+          headers: { get: () => null },
           arrayBuffer: () => Promise.resolve(new ArrayBuffer(1024)),
         }),
       );

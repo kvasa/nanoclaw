@@ -110,7 +110,7 @@ if [ -n "$ANTHROPIC_BASE_URL" ]; then
 const http = require('http');
 const u = new URL('/mcp-creds', process.env.ANTHROPIC_BASE_URL);
 const opts = {host: u.hostname, port: Number(u.port), path: u.pathname, headers: process.env.NANOCLAW_CREDS_TOKEN ? {Authorization: 'Bearer ' + process.env.NANOCLAW_CREDS_TOKEN} : {}};
-http.get(opts, (res) => {
+const req = http.get(opts, (res) => {
   let d = '';
   res.on('data', c => d += c);
   res.on('end', () => {
@@ -121,7 +121,10 @@ http.get(opts, (res) => {
       }
     } catch (e) { process.stderr.write('[mcp-creds] parse error: ' + e.message + '\n'); }
   });
-}).on('error', e => process.stderr.write('[mcp-creds] fetch error: ' + e.message + '\n'));
+});
+// Fail fast if the proxy is unreachable/stalled instead of hanging container startup for minutes.
+req.setTimeout(5000, () => { process.stderr.write('[mcp-creds] fetch timeout\n'); req.destroy(); });
+req.on('error', e => process.stderr.write('[mcp-creds] fetch error: ' + e.message + '\n'));
 " > /tmp/.mcp-creds || true
   if [ -s /tmp/.mcp-creds ]; then
     while IFS=$'\t' read -r cred_key cred_b64; do

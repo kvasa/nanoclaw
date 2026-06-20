@@ -1,7 +1,11 @@
 import http from 'http';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { startApiServer, ApiServerConfig } from './api-server.js';
+import {
+  startApiServer,
+  withGroupLock,
+  ApiServerConfig,
+} from './api-server.js';
 
 // Mock container-runner so we don't spawn real containers
 vi.mock('./container-runner.js', () => ({
@@ -594,6 +598,54 @@ describe('API server', () => {
       });
 
       expect(mockRunAgent).toHaveBeenCalled();
+    });
+  });
+
+  describe('withGroupLock', () => {
+    it('serializes overlapping work for the same key', async () => {
+      const order: string[] = [];
+      const makeTask = (id: string, delay: number) => async () => {
+        order.push(`start-${id}`);
+        await new Promise((r) => setTimeout(r, delay));
+        order.push(`end-${id}`);
+      };
+
+      // Start B before A finishes; the lock must still run them end-to-end.
+      const a = withGroupLock('g', makeTask('a', 30));
+      const b = withGroupLock('g', makeTask('b', 1));
+      await Promise.all([a, b]);
+
+      expect(order).toEqual(['start-a', 'end-a', 'start-b', 'end-b']);
+    });
+
+    it('runs different keys concurrently', async () => {
+      const order: string[] = [];
+      const a = withGroupLock('g1', async () => {
+        order.push('start-a');
+        await new Promise((r) => setTimeout(r, 30));
+        order.push('end-a');
+      });
+      const b = withGroupLock('g2', async () => {
+        order.push('start-b');
+        await new Promise((r) => setTimeout(r, 1));
+        order.push('end-b');
+      });
+      await Promise.all([a, b]);
+
+      // Different keys don't block each other: b finishes before a.
+      expect(order).toEqual(['start-a', 'start-b', 'end-b', 'end-a']);
+    });
+
+    it('releases the lock even when the task throws', async () => {
+      await expect(
+        withGroupLock('g', async () => {
+          throw new Error('boom');
+        }),
+      ).rejects.toThrow('boom');
+
+      // A subsequent call still acquires the lock.
+      const result = await withGroupLock('g', async () => 'ok');
+      expect(result).toBe('ok');
     });
   });
 });

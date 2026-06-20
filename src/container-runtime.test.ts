@@ -21,6 +21,7 @@ vi.mock('child_process', () => ({
 import {
   CONTAINER_RUNTIME_BIN,
   readonlyMountArgs,
+  resourceLimitArgs,
   stopContainerArgs,
   ensureContainerRuntimeRunning,
   cleanupOrphans,
@@ -38,6 +39,35 @@ describe('readonlyMountArgs', () => {
   it('returns -v flag with :ro suffix', () => {
     const args = readonlyMountArgs('/host/path', '/container/path');
     expect(args).toEqual(['-v', '/host/path:/container/path:ro']);
+  });
+});
+
+describe('resourceLimitArgs', () => {
+  it('emits --memory, --cpus and (on docker) --pids-limit', () => {
+    const args = resourceLimitArgs({
+      memory: '2g',
+      cpus: '2',
+      pidsLimit: '512',
+    });
+    expect(args).toContain('--memory');
+    expect(args).toContain('2g');
+    expect(args).toContain('--cpus');
+    expect(args).toContain('2');
+    // Default runtime is docker, which supports --pids-limit.
+    expect(CONTAINER_RUNTIME_BIN).toBe('docker');
+    expect(args).toContain('--pids-limit');
+    expect(args).toContain('512');
+  });
+
+  it('omits a limit when its value is empty', () => {
+    const args = resourceLimitArgs({ memory: '', cpus: '2', pidsLimit: '' });
+    expect(args).not.toContain('--memory');
+    expect(args).not.toContain('--pids-limit');
+    expect(args).toEqual(['--cpus', '2']);
+  });
+
+  it('returns no flags when all limits are empty', () => {
+    expect(resourceLimitArgs({})).toEqual([]);
   });
 });
 

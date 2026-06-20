@@ -10,8 +10,11 @@ import path from 'path';
 import { readEnvFile } from './env.js';
 import { NANOCLAW_CREDS_TOKEN } from './creds-token.js';
 import {
+  CONTAINER_CPUS,
   CONTAINER_IMAGE,
   CONTAINER_MAX_OUTPUT_SIZE,
+  CONTAINER_MEMORY,
+  CONTAINER_PIDS_LIMIT,
   CONTAINER_TIMEOUT,
   CREDENTIAL_PROXY_PORT,
   DATA_DIR,
@@ -26,6 +29,7 @@ import {
   CONTAINER_RUNTIME_BIN,
   hostGatewayArgs,
   readonlyMountArgs,
+  resourceLimitArgs,
   stopContainerArgs,
 } from './container-runtime.js';
 import { detectAuthMode } from './credential-proxy.js';
@@ -291,6 +295,16 @@ function buildContainerArgs(
   enabledMcpServers?: string[],
 ): string[] {
   const args: string[] = ['run', '-i', '--rm', '--name', containerName];
+
+  // Cap resources so a single runaway/malicious agent can't exhaust host
+  // CPU/memory/PIDs and take down NanoClaw (and every other group with it).
+  args.push(
+    ...resourceLimitArgs({
+      memory: CONTAINER_MEMORY,
+      cpus: CONTAINER_CPUS,
+      pidsLimit: CONTAINER_PIDS_LIMIT,
+    }),
+  );
 
   // Pass host timezone so container's local time matches the user's
   args.push('-e', `TZ=${TIMEZONE}`);

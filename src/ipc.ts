@@ -121,8 +121,19 @@ export function startIpcWatcher(deps: IpcDeps): void {
             .filter((f) => f.endsWith('.json'));
           for (const file of messageFiles) {
             const filePath = path.join(messagesDir, file);
+            // Atomically claim the file before reading (rename is atomic on
+            // POSIX). Closes the TOCTOU window between readdir and read: if the
+            // file vanished (cleanup, retry, or a second reader), skip it
+            // instead of silently failing the read.
+            const claimedPath = `${filePath}.processing`;
             try {
-              const raw = JSON.parse(fs.readFileSync(filePath, 'utf-8'));
+              fs.renameSync(filePath, claimedPath);
+            } catch (err) {
+              if ((err as NodeJS.ErrnoException).code === 'ENOENT') continue;
+              throw err;
+            }
+            try {
+              const raw = JSON.parse(fs.readFileSync(claimedPath, 'utf-8'));
               const parsed = IpcFileMessageSchema.safeParse(raw);
               if (!parsed.success) {
                 logger.warn(
@@ -319,7 +330,7 @@ export function startIpcWatcher(deps: IpcDeps): void {
                   }
                 }
               }
-              fs.unlinkSync(filePath);
+              fs.unlinkSync(claimedPath);
             } catch (err) {
               logger.error(
                 { file, sourceGroup, err },
@@ -328,7 +339,7 @@ export function startIpcWatcher(deps: IpcDeps): void {
               const errorDir = path.join(ipcBaseDir, 'errors');
               fs.mkdirSync(errorDir, { recursive: true });
               fs.renameSync(
-                filePath,
+                claimedPath,
                 path.join(errorDir, `${sourceGroup}-${file}`),
               );
             }
@@ -349,11 +360,20 @@ export function startIpcWatcher(deps: IpcDeps): void {
             .filter((f) => f.endsWith('.json'));
           for (const file of taskFiles) {
             const filePath = path.join(tasksDir, file);
+            // Atomically claim before reading — same TOCTOU fix as the message
+            // loop above.
+            const claimedPath = `${filePath}.processing`;
             try {
-              const data = JSON.parse(fs.readFileSync(filePath, 'utf-8'));
+              fs.renameSync(filePath, claimedPath);
+            } catch (err) {
+              if ((err as NodeJS.ErrnoException).code === 'ENOENT') continue;
+              throw err;
+            }
+            try {
+              const data = JSON.parse(fs.readFileSync(claimedPath, 'utf-8'));
               // Pass source group identity to processTaskIpc for authorization
               await processTaskIpc(data, sourceGroup, isMain, deps);
-              fs.unlinkSync(filePath);
+              fs.unlinkSync(claimedPath);
             } catch (err) {
               logger.error(
                 { file, sourceGroup, err },
@@ -362,7 +382,7 @@ export function startIpcWatcher(deps: IpcDeps): void {
               const errorDir = path.join(ipcBaseDir, 'errors');
               fs.mkdirSync(errorDir, { recursive: true });
               fs.renameSync(
-                filePath,
+                claimedPath,
                 path.join(errorDir, `${sourceGroup}-${file}`),
               );
             }

@@ -61,6 +61,37 @@ interface ActiveContainer {
 /** Per-group active container map, keyed by groupFolder. */
 const activeContainers = new Map<string, ActiveContainer>();
 
+// Per-group serialization. Concurrent /api/query requests to the same group
+// otherwise overwrite each other's output callbacks on the shared
+// ActiveContainer, routing one caller's streamed output to another caller's
+// HTTP response. The lock makes each request finish its container interaction
+// before the next one claims the callbacks.
+const groupLocks = new Map<string, Promise<void>>();
+
+/** @internal exported for tests */
+export async function withGroupLock<T>(
+  key: string,
+  fn: () => Promise<T>,
+): Promise<T> {
+  const prev = groupLocks.get(key) ?? Promise.resolve();
+  let release!: () => void;
+  const current = new Promise<void>((r) => {
+    release = r;
+  });
+  const tail = prev.then(() => current);
+  groupLocks.set(key, tail);
+  await prev.catch(() => {});
+  try {
+    return await fn();
+  } finally {
+    release();
+    // Drop the entry only if no later request has chained onto it.
+    if (groupLocks.get(key) === tail) {
+      groupLocks.delete(key);
+    }
+  }
+}
+
 function readBody(req: IncomingMessage): Promise<Buffer> {
   return new Promise((resolve, reject) => {
     const chunks: Buffer[] = [];
@@ -206,151 +237,153 @@ export function startApiServer(config: ApiServerConfig): Promise<Server> {
             .catch(() => undefined);
         }
 
-        const existing = activeContainers.get(group.folder);
+        await withGroupLock(group.folder, async () => {
+          const existing = activeContainers.get(group.folder);
 
-        if (existing?.alive) {
-          // Reuse existing container — pipe via IPC
-          logger.info(
-            { group: group.name },
-            'Piping API query to existing container',
-          );
+          if (existing?.alive) {
+            // Reuse existing container — pipe via IPC
+            logger.info(
+              { group: group.name },
+              'Piping API query to existing container',
+            );
 
-          await new Promise<void>((resolveRequest) => {
-            // Swap the output handler to this HTTP response
-            existing.onResult = (result: ContainerOutput) => {
-              if (result.newSessionId) {
-                config.setSession(group.folder, result.newSessionId);
-              }
-              if (result.result) {
-                const text = result.result
-                  .replace(/<internal>[\s\S]*?<\/internal>/g, '')
-                  .trim();
-                if (text) {
-                  sendSSE(res, { type: 'chunk', text });
-                  if (config.slackNotifier) {
-                    config.slackNotifier.postResult(text).catch(() => {});
+            await new Promise<void>((resolveRequest) => {
+              // Swap the output handler to this HTTP response
+              existing.onResult = (result: ContainerOutput) => {
+                if (result.newSessionId) {
+                  config.setSession(group.folder, result.newSessionId);
+                }
+                if (result.result) {
+                  const text = result.result
+                    .replace(/<internal>[\s\S]*?<\/internal>/g, '')
+                    .trim();
+                  if (text) {
+                    sendSSE(res, { type: 'chunk', text });
+                    if (config.slackNotifier) {
+                      config.slackNotifier.postResult(text).catch(() => {});
+                    }
                   }
                 }
-              }
-              if (result.result) {
-                existing.onResult = null;
-                existing.onProgress = null;
-                existing.resolveRequest = null;
-                resolveRequest();
-              }
-            };
-            existing.onProgress = (text: string) => {
-              sendSSE(res, { type: 'progress', text });
-              if (config.slackNotifier && slackThreadTs) {
-                config.slackNotifier
-                  .postProgress(slackThreadTs, text)
-                  .catch(() => {});
-              }
-            };
-            existing.resolveRequest = resolveRequest;
+                if (result.result) {
+                  existing.onResult = null;
+                  existing.onProgress = null;
+                  existing.resolveRequest = null;
+                  resolveRequest();
+                }
+              };
+              existing.onProgress = (text: string) => {
+                sendSSE(res, { type: 'progress', text });
+                if (config.slackNotifier && slackThreadTs) {
+                  config.slackNotifier
+                    .postProgress(slackThreadTs, text)
+                    .catch(() => {});
+                }
+              };
+              existing.resolveRequest = resolveRequest;
 
-            pipeViaIpc(group.folder, prompt);
-          });
-        } else {
-          // Spawn new container
-          const sessionId = config.getSession(group.folder);
-          const tracker: ActiveContainer = {
-            groupFolder: group.folder,
-            onResult: null,
-            onProgress: null,
-            resolveRequest: null,
-            alive: true,
-          };
-          activeContainers.set(group.folder, tracker);
+              pipeViaIpc(group.folder, prompt);
+            });
+          } else {
+            // Spawn new container
+            const sessionId = config.getSession(group.folder);
+            const tracker: ActiveContainer = {
+              groupFolder: group.folder,
+              onResult: null,
+              onProgress: null,
+              resolveRequest: null,
+              alive: true,
+            };
+            activeContainers.set(group.folder, tracker);
 
-          await new Promise<void>((resolveRequest, rejectRequest) => {
-            tracker.onResult = (result: ContainerOutput) => {
-              if (result.newSessionId) {
-                config.setSession(group.folder, result.newSessionId);
-              }
-              if (result.result) {
-                const text = result.result
-                  .replace(/<internal>[\s\S]*?<\/internal>/g, '')
-                  .trim();
-                if (text) {
-                  sendSSE(res, { type: 'chunk', text });
-                  if (config.slackNotifier) {
-                    config.slackNotifier.postResult(text).catch(() => {});
+            await new Promise<void>((resolveRequest, rejectRequest) => {
+              tracker.onResult = (result: ContainerOutput) => {
+                if (result.newSessionId) {
+                  config.setSession(group.folder, result.newSessionId);
+                }
+                if (result.result) {
+                  const text = result.result
+                    .replace(/<internal>[\s\S]*?<\/internal>/g, '')
+                    .trim();
+                  if (text) {
+                    sendSSE(res, { type: 'chunk', text });
+                    if (config.slackNotifier) {
+                      config.slackNotifier.postResult(text).catch(() => {});
+                    }
                   }
                 }
-              }
-              // Resolve HTTP response after first output with a result
-              if (result.result && tracker.resolveRequest) {
-                const r = tracker.resolveRequest;
-                tracker.onResult = null;
-                tracker.onProgress = null;
-                tracker.resolveRequest = null;
-                r();
-              }
-            };
-            tracker.onProgress = (text: string) => {
-              sendSSE(res, { type: 'progress', text });
-              if (config.slackNotifier && slackThreadTs) {
-                config.slackNotifier
-                  .postProgress(slackThreadTs, text)
-                  .catch(() => {});
-              }
-            };
-            tracker.resolveRequest = resolveRequest;
-
-            runContainerAgent(
-              group,
-              {
-                prompt,
-                sessionId,
-                groupFolder: group.folder,
-                chatJid,
-                isMain: false,
-              },
-              (proc, containerName) => {
-                // Kill the container process when client disconnects
-                req.on('close', () => {
-                  logger.debug(
-                    { containerName },
-                    'API client disconnected, killing container',
-                  );
+                // Resolve HTTP response after first output with a result
+                if (result.result && tracker.resolveRequest) {
+                  const r = tracker.resolveRequest;
+                  tracker.onResult = null;
                   tracker.onProgress = null;
-                  proc.kill('SIGTERM');
+                  tracker.resolveRequest = null;
+                  r();
+                }
+              };
+              tracker.onProgress = (text: string) => {
+                sendSSE(res, { type: 'progress', text });
+                if (config.slackNotifier && slackThreadTs) {
+                  config.slackNotifier
+                    .postProgress(slackThreadTs, text)
+                    .catch(() => {});
+                }
+              };
+              tracker.resolveRequest = resolveRequest;
+
+              runContainerAgent(
+                group,
+                {
+                  prompt,
+                  sessionId,
+                  groupFolder: group.folder,
+                  chatJid,
+                  isMain: false,
+                },
+                (proc, containerName) => {
+                  // Kill the container process when client disconnects
+                  req.on('close', () => {
+                    logger.debug(
+                      { containerName },
+                      'API client disconnected, killing container',
+                    );
+                    tracker.onProgress = null;
+                    proc.kill('SIGTERM');
+                  });
+                },
+                async (result: ContainerOutput) => {
+                  // Delegate to the mutable handler — routes to whichever
+                  // HTTP response is currently waiting.
+                  if (tracker.onResult) {
+                    tracker.onResult(result);
+                  }
+                },
+                (text: string) => {
+                  if (tracker.onProgress) {
+                    tracker.onProgress(text);
+                  }
+                },
+              )
+                .then(() => {
+                  // Container exited — clean up tracker
+                  tracker.alive = false;
+                  activeContainers.delete(group.folder);
+                  // Resolve any pending request
+                  if (tracker.resolveRequest) {
+                    tracker.resolveRequest();
+                    tracker.resolveRequest = null;
+                  }
+                })
+                .catch((err) => {
+                  tracker.alive = false;
+                  activeContainers.delete(group.folder);
+                  if (tracker.resolveRequest) {
+                    tracker.resolveRequest = null;
+                    rejectRequest(err);
+                  }
                 });
-              },
-              async (result: ContainerOutput) => {
-                // Delegate to the mutable handler — routes to whichever
-                // HTTP response is currently waiting.
-                if (tracker.onResult) {
-                  tracker.onResult(result);
-                }
-              },
-              (text: string) => {
-                if (tracker.onProgress) {
-                  tracker.onProgress(text);
-                }
-              },
-            )
-              .then(() => {
-                // Container exited — clean up tracker
-                tracker.alive = false;
-                activeContainers.delete(group.folder);
-                // Resolve any pending request
-                if (tracker.resolveRequest) {
-                  tracker.resolveRequest();
-                  tracker.resolveRequest = null;
-                }
-              })
-              .catch((err) => {
-                tracker.alive = false;
-                activeContainers.delete(group.folder);
-                if (tracker.resolveRequest) {
-                  tracker.resolveRequest = null;
-                  rejectRequest(err);
-                }
-              });
-          });
-        }
+            });
+          }
+        });
 
         sendSSE(res, { type: 'done' });
         res.end();

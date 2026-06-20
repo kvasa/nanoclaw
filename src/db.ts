@@ -41,6 +41,9 @@ function createSchema(database: Database.Database): void {
       FOREIGN KEY (chat_jid) REFERENCES chats(jid)
     );
     CREATE INDEX IF NOT EXISTS idx_timestamp ON messages(timestamp);
+    -- getNewMessages / getMessagesSince filter by chat_jid + timestamp on every
+    -- 2s poll; the composite index avoids a full table scan as messages grow.
+    CREATE INDEX IF NOT EXISTS idx_messages_chat_jid ON messages(chat_jid, timestamp DESC);
 
     CREATE TABLE IF NOT EXISTS scheduled_tasks (
       id TEXT PRIMARY KEY,
@@ -152,11 +155,25 @@ function createSchema(database: Database.Database): void {
   }
 }
 
+/**
+ * Apply connection pragmas. WAL lets the poll loop read while writes happen;
+ * synchronous=NORMAL is safe under WAL and much faster; cache_size raises the
+ * page cache. foreign_keys is intentionally left OFF — message inserts don't
+ * guarantee a parent chat row, so enforcing FKs would drop messages; integrity
+ * for task_run_logs is handled by manual cascade in deleteTask().
+ */
+function applyPragmas(database: Database.Database): void {
+  database.pragma('journal_mode = WAL');
+  database.pragma('synchronous = NORMAL');
+  database.pragma('cache_size = -10000'); // ~10MB (negative = KiB)
+}
+
 export function initDatabase(): void {
   const dbPath = path.join(STORE_DIR, 'messages.db');
   fs.mkdirSync(path.dirname(dbPath), { recursive: true });
 
   db = new Database(dbPath);
+  applyPragmas(db);
   createSchema(db);
 
   // Migrate from JSON files if they exist
@@ -166,6 +183,8 @@ export function initDatabase(): void {
 /** @internal - for tests only. Creates a fresh in-memory database. */
 export function _initTestDatabase(): void {
   db = new Database(':memory:');
+  // WAL is a no-op for :memory: DBs but the other pragmas still apply.
+  applyPragmas(db);
   createSchema(db);
 }
 

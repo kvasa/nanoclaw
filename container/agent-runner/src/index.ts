@@ -83,7 +83,7 @@ interface SDKUserMessage {
   session_id: string;
 }
 
-const CLAUDE_MODEL = process.env.CLAUDE_MODEL || 'claude-sonnet-4-6';
+const CLAUDE_MODEL = process.env.CLAUDE_MODEL || 'claude-opus-4-8';
 const LLM_LOG_DETAIL = process.env.LLM_LOG_DETAIL || 'summary';
 const LLM_LOG_FULL = LLM_LOG_DETAIL === 'full';
 

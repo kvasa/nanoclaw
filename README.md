@@ -137,6 +137,8 @@ Key files:
 - `src/db.ts` - SQLite operations (messages, groups, sessions, state)
 - `groups/*/CLAUDE.md` - Per-group memory
 
+For a deeper dive into subsystems, the tech stack, and a code-verified, prioritized improvement backlog, see [`docs/ANALYSIS.md`](docs/ANALYSIS.md). The full [`docs/`](docs/) folder holds the architecture, spec, and security references.
+
 ## FAQ
 
 **Why Docker?**

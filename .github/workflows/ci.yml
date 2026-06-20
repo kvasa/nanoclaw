@@ -3,6 +3,8 @@ name: CI
 on:
   pull_request:
     branches: [main]
+  push:
+    branches: [main]
 
 jobs:
   ci:
@@ -23,3 +25,24 @@ jobs:
 
       - name: Tests
         run: npx vitest run
+
+  container:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      # Catch TypeScript compile breakage in the in-container agent runner —
+      # it isn't covered by the root tsc/vitest run above.
+      - name: Build agent-runner
+        working-directory: container/agent-runner
+        run: |
+          npm ci
+          npm run build
+
+      # Validate the Dockerfile (syntax + best-practice checks) without paying
+      # for a full ~2.3GB image build on every push.
+      - name: Validate Dockerfile
+        run: docker build --check -f container/Dockerfile container

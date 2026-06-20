@@ -60,6 +60,13 @@ export const CONTAINER_MAX_OUTPUT_SIZE = parseInt(
   process.env.CONTAINER_MAX_OUTPUT_SIZE || '10485760',
   10,
 ); // 10MB default
+
+// Per-container resource limits — prevent a single runaway/malicious agent from
+// exhausting host CPU/memory/PIDs and taking down the whole NanoClaw process.
+// Empty string disables the corresponding limit.
+export const CONTAINER_MEMORY = process.env.CONTAINER_MEMORY ?? '2g';
+export const CONTAINER_CPUS = process.env.CONTAINER_CPUS ?? '2';
+export const CONTAINER_PIDS_LIMIT = process.env.CONTAINER_PIDS_LIMIT ?? '512';
 export const CREDENTIAL_PROXY_PORT = parseInt(
   process.env.CREDENTIAL_PROXY_PORT || '3001',
   10,
