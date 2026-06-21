@@ -32,6 +32,25 @@ export interface IpcDeps {
    * undefined.
    */
   postAnnouncement?: (jid: string, text: string) => Promise<string | undefined>;
+  /**
+   * Send a message and return its ts (Slack) so the agent can later edit or
+   * delete it. Channels without message ids return undefined.
+   */
+  sendMessageWithTs?: (
+    jid: string,
+    text: string,
+    threadTs?: string,
+  ) => Promise<string | undefined>;
+  /**
+   * Edit a previously sent message in place (Slack only). No-op on channels
+   * that don't support editing.
+   */
+  editMessage?: (jid: string, ts: string, text: string) => Promise<void>;
+  /**
+   * Delete a previously sent message (Slack only). No-op on channels that
+   * don't support deletion.
+   */
+  deleteMessage?: (jid: string, ts: string) => Promise<void>;
   sendEmailReply?: (threadJid: string, text: string) => Promise<boolean>;
   composeEmail?: (
     to: string,
@@ -277,14 +296,74 @@ export function startIpcWatcher(deps: IpcDeps): void {
                       'Unauthorized IPC message attempt blocked',
                     );
                   } else if (data.type === 'message') {
-                    await deps.sendMessage(
+                    if (data.returnTs && data.requestId) {
+                      // Round-trip: post and write the ts back so the agent
+                      // can edit/delete this exact message later.
+                      let ts: string | undefined;
+                      if (deps.sendMessageWithTs) {
+                        ts = await deps.sendMessageWithTs(
+                          data.chatJid,
+                          data.text,
+                          data.threadTs,
+                        );
+                      } else {
+                        await deps.sendMessage(
+                          data.chatJid,
+                          data.text,
+                          data.threadTs,
+                        );
+                      }
+                      const responseDir = path.join(
+                        ipcBaseDir,
+                        sourceGroup,
+                        'input',
+                      );
+                      fs.mkdirSync(responseDir, { recursive: true });
+                      const responseFile = path.join(
+                        responseDir,
+                        `send_message_${data.requestId}.json`,
+                      );
+                      if (responseFile.startsWith(responseDir + path.sep)) {
+                        fs.writeFileSync(
+                          responseFile,
+                          JSON.stringify({ requestId: data.requestId, ts }),
+                        );
+                      } else {
+                        logger.warn(
+                          { requestId: data.requestId, sourceGroup },
+                          'send_message: requestId path traversal blocked',
+                        );
+                      }
+                      logger.info(
+                        { chatJid: data.chatJid, sourceGroup, ts },
+                        'IPC message sent (with ts)',
+                      );
+                    } else {
+                      await deps.sendMessage(
+                        data.chatJid,
+                        data.text,
+                        data.threadTs,
+                      );
+                      logger.info(
+                        { chatJid: data.chatJid, sourceGroup },
+                        'IPC message sent',
+                      );
+                    }
+                  } else if (data.type === 'edit_message') {
+                    await deps.editMessage?.(
                       data.chatJid,
+                      data.messageTs,
                       data.text,
-                      data.threadTs,
                     );
                     logger.info(
                       { chatJid: data.chatJid, sourceGroup },
-                      'IPC message sent',
+                      'IPC message edited',
+                    );
+                  } else if (data.type === 'delete_message') {
+                    await deps.deleteMessage?.(data.chatJid, data.messageTs);
+                    logger.info(
+                      { chatJid: data.chatJid, sourceGroup },
+                      'IPC message deleted',
                     );
                   } else if (data.type === 'send_file') {
                     await deps.sendFile(

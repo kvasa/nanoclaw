@@ -257,6 +257,36 @@ describe('task scheduler', () => {
       expect(t.updateThreadTs).toHaveBeenCalledWith('tips', undefined);
     });
 
+    it('skips the opener when suppress_opener is set (tidy silent monitoring channel)', async () => {
+      vi.useRealTimers();
+      const task = makeTask({ id: 'task-silent', suppress_opener: 1 });
+      createTask({
+        id: task.id,
+        group_folder: task.group_folder,
+        chat_jid: task.chat_jid,
+        prompt: task.prompt,
+        schedule_type: task.schedule_type,
+        schedule_value: task.schedule_value,
+        context_mode: task.context_mode,
+        next_run: task.next_run,
+        status: task.status,
+        created_at: task.created_at,
+      });
+
+      const postOpener = vi.fn(
+        async (): Promise<string | undefined> => 'TS_SHOULD_NOT_HAPPEN',
+      );
+      const t = makeDeps({ postTaskOpener: postOpener });
+
+      await runTask(task, t.deps);
+
+      // Opener must NOT be posted, and thread_ts must be cleared (undefined).
+      expect(postOpener).not.toHaveBeenCalled();
+      expect(t.updateThreadTs).toHaveBeenCalledWith('tips', undefined);
+      // Container still ran.
+      expect(runContainerAgentMock).toHaveBeenCalled();
+    });
+
     it('continues without thread routing when postTaskOpener throws', async () => {
       vi.useRealTimers();
       const task = makeTask({ id: 'task-opener-throws' });

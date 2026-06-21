@@ -11,6 +11,14 @@ export const IpcMessageSchema = z.object({
   chatJid: z.string(),
   text: z.string(),
   threadTs: z.string().optional(),
+  // When returnTs is set, the host posts the message and writes the resulting
+  // Slack ts back to a response file keyed by requestId (for edit/delete later).
+  returnTs: z.string().optional(),
+  requestId: z
+    .string()
+    .max(128)
+    .regex(/^[a-zA-Z0-9_-]+$/)
+    .optional(),
 });
 
 export const IpcSendFileSchema = z.object({
@@ -69,6 +77,19 @@ export const IpcAnnounceStartSchema = z.object({
     .regex(/^[a-zA-Z0-9_-]+$/),
 });
 
+export const IpcEditMessageSchema = z.object({
+  type: z.literal('edit_message'),
+  chatJid: z.string(),
+  messageTs: z.string(),
+  text: z.string(),
+});
+
+export const IpcDeleteMessageSchema = z.object({
+  type: z.literal('delete_message'),
+  chatJid: z.string(),
+  messageTs: z.string(),
+});
+
 export const IpcFileMessageSchema = z.discriminatedUnion('type', [
   IpcMessageSchema,
   IpcSendFileSchema,
@@ -77,6 +98,8 @@ export const IpcFileMessageSchema = z.discriminatedUnion('type', [
   IpcComposeEmailSchema,
   IpcReadEmailsSchema,
   IpcAnnounceStartSchema,
+  IpcEditMessageSchema,
+  IpcDeleteMessageSchema,
 ]);
 
 // --- IPC Task Schemas (processTaskIpc) ---

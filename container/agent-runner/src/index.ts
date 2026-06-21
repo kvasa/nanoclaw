@@ -457,6 +457,14 @@ function drainIpcInput(): string[] {
 
     const messages: string[] = [];
     for (const file of files) {
+      // Round-trip response files are written by the HOST for an MCP tool that
+      // is actively polling the input dir for them (read_emails, announce,
+      // send_message with return_ts). They are NOT container input messages —
+      // consuming/deleting them here would make that MCP tool hang/time out.
+      // Their own MCP reader unlinks them after reading.
+      if (/^(read_emails|announce|send_message)_/.test(file)) {
+        continue;
+      }
       const filePath = path.join(IPC_INPUT_DIR, file);
       try {
         const data = JSON.parse(fs.readFileSync(filePath, 'utf-8'));

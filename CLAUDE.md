@@ -34,6 +34,30 @@ Single Node.js process that connects to WhatsApp, routes messages to Claude Agen
 | `/qodo-pr-resolver` | Fetch and fix Qodo PR review issues interactively or in batch |
 | `/get-qodo-rules` | Load org- and repo-level coding rules from Qodo before code tasks |
 
+## Databáze
+
+Hlavní SQLite databáze: **`store/messages.db`** (cesta `STORE_DIR` v `src/config.ts`, běží ve WAL módu).
+CLI je nainstalované v `~/.local/bin/sqlite3` (na PATH) — používej ho přímo místo obcházení přes node.
+
+```bash
+sqlite3 store/messages.db ".tables"
+sqlite3 store/messages.db "SELECT id, group_folder, schedule_value, status FROM scheduled_tasks;"
+```
+
+Tabulky a co obsahují:
+| Tabulka | Obsah |
+|---------|-------|
+| `chats` | Registrované chaty/kanály (WhatsApp/Slack JIDs) |
+| `messages` | Historie zpráv |
+| `scheduled_tasks` | Naplánované úlohy (cron/interval/once) — sloupce: `id, group_folder, chat_jid, prompt, schedule_type, schedule_value, next_run, last_run, last_result, status, created_at, context_mode` |
+| `task_run_logs` | Logy běhů naplánovaných úloh |
+| `router_state` | Stav routeru |
+| `sessions` | Session IDs agentů per skupina |
+| `registered_groups` | Registrované skupiny — sloupce: `jid, name, folder, trigger_pattern, added_at, container_config, requires_trigger, is_main` |
+| `gmail_processed_ids` | Už zpracované Gmail zprávy (dedup) |
+
+Pozn.: `data/messages.db` a `data/nanoclaw.db` jsou prázdné zbytky, nepoužívají se.
+
 ## Development
 
 Run commands directly—don't tell the user to run them.

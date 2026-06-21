@@ -54,6 +54,8 @@ vi.mock('@slack/bolt', () => ({
       },
       chat: {
         postMessage: vi.fn().mockResolvedValue(undefined),
+        update: vi.fn().mockResolvedValue({ ok: true }),
+        delete: vi.fn().mockResolvedValue({ ok: true }),
       },
       filesUploadV2: vi.fn().mockResolvedValue({ files: [] }),
       reactions: {
@@ -617,6 +619,71 @@ describe('SlackChannel', () => {
         channel: 'D9876543210',
         text: 'DM message',
       });
+    });
+
+    it('updateMessage edits a message via Slack client', async () => {
+      const opts = createTestOpts();
+      const channel = new SlackChannel(opts);
+      await channel.connect();
+
+      await channel.updateMessage(
+        'slack:C0123456789',
+        '1700000000.000100',
+        '✅ Poslední kontrola: dnes',
+      );
+
+      expect(currentApp().client.chat.update).toHaveBeenCalledWith({
+        channel: 'C0123456789',
+        ts: '1700000000.000100',
+        text: '✅ Poslední kontrola: dnes',
+      });
+    });
+
+    it('deleteMessage deletes a message via Slack client', async () => {
+      const opts = createTestOpts();
+      const channel = new SlackChannel(opts);
+      await channel.connect();
+
+      await channel.deleteMessage('slack:C0123456789', '1700000000.000100');
+
+      expect(currentApp().client.chat.delete).toHaveBeenCalledWith({
+        channel: 'C0123456789',
+        ts: '1700000000.000100',
+      });
+    });
+
+    it('updateMessage and deleteMessage no-op when disconnected', async () => {
+      const opts = createTestOpts();
+      const channel = new SlackChannel(opts);
+
+      await expect(
+        channel.updateMessage('slack:C0123456789', 'ts', 'x'),
+      ).resolves.toBeUndefined();
+      await expect(
+        channel.deleteMessage('slack:C0123456789', 'ts'),
+      ).resolves.toBeUndefined();
+      expect(currentApp().client.chat.update).not.toHaveBeenCalled();
+      expect(currentApp().client.chat.delete).not.toHaveBeenCalled();
+    });
+
+    it('updateMessage/deleteMessage swallow API errors', async () => {
+      const opts = createTestOpts();
+      const channel = new SlackChannel(opts);
+      await channel.connect();
+
+      currentApp().client.chat.update.mockRejectedValueOnce(
+        new Error('message_not_found'),
+      );
+      currentApp().client.chat.delete.mockRejectedValueOnce(
+        new Error('message_not_found'),
+      );
+
+      await expect(
+        channel.updateMessage('slack:C0123456789', 'ts', 'x'),
+      ).resolves.toBeUndefined();
+      await expect(
+        channel.deleteMessage('slack:C0123456789', 'ts'),
+      ).resolves.toBeUndefined();
     });
 
     it('queues message when disconnected', async () => {

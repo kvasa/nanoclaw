@@ -873,6 +873,31 @@ async function main(): Promise<void> {
       await channel.sendMessage(jid, text);
       return undefined;
     },
+    sendMessageWithTs: async (jid, text, threadTs) => {
+      const channel = findChannel(channels, jid);
+      if (!channel) throw new Error(`No channel for JID: ${jid}`);
+      if (channel instanceof SlackChannel) {
+        return channel.sendMessageWithTs(jid, text, threadTs);
+      }
+      await channel.sendMessage(jid, text, threadTs);
+      return undefined;
+    },
+    editMessage: async (jid, ts, text) => {
+      const channel = findChannel(channels, jid);
+      if (!channel) throw new Error(`No channel for JID: ${jid}`);
+      // Only Slack supports editing; other channels silently no-op.
+      if (channel instanceof SlackChannel) {
+        await channel.updateMessage(jid, ts, text);
+      }
+    },
+    deleteMessage: async (jid, ts) => {
+      const channel = findChannel(channels, jid);
+      if (!channel) throw new Error(`No channel for JID: ${jid}`);
+      // Only Slack supports deletion; other channels silently no-op.
+      if (channel instanceof SlackChannel) {
+        await channel.deleteMessage(jid, ts);
+      }
+    },
     sendEmailReply: gmailCh
       ? (threadJid, text): Promise<boolean> =>
           gmailCh.replyEmail(threadJid, text)

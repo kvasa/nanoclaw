@@ -339,6 +339,53 @@ export class SlackChannel implements Channel {
     }
   }
 
+  /**
+   * Edit a previously sent message in place. Uses `chat:write` (already
+   * required for posting). Best-effort: logs a warning on failure.
+   */
+  async updateMessage(jid: string, ts: string, text: string): Promise<void> {
+    const channelId = jid.replace(/^slack:/, '');
+
+    if (!this.connected) {
+      logger.info({ jid }, 'Slack disconnected, skipping updateMessage');
+      return;
+    }
+
+    try {
+      await this.app.client.chat.update({
+        channel: channelId,
+        ts,
+        text,
+      });
+      logger.info({ jid, ts, length: text.length }, 'Slack message updated');
+    } catch (err) {
+      logger.warn({ jid, ts, err }, 'Failed to update Slack message');
+    }
+  }
+
+  /**
+   * Delete a previously sent message. Uses `chat:write`. Best-effort: logs a
+   * warning on failure (e.g. message already gone).
+   */
+  async deleteMessage(jid: string, ts: string): Promise<void> {
+    const channelId = jid.replace(/^slack:/, '');
+
+    if (!this.connected) {
+      logger.info({ jid }, 'Slack disconnected, skipping deleteMessage');
+      return;
+    }
+
+    try {
+      await this.app.client.chat.delete({
+        channel: channelId,
+        ts,
+      });
+      logger.info({ jid, ts }, 'Slack message deleted');
+    } catch (err) {
+      logger.warn({ jid, ts, err }, 'Failed to delete Slack message');
+    }
+  }
+
   async sendFile(
     jid: string,
     filePath: string,

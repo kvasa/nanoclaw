@@ -68,6 +68,12 @@ export interface ScheduledTask {
   last_result: string | null;
   status: 'active' | 'paused' | 'completed';
   created_at: string;
+  /**
+   * When truthy (1), the scheduler skips posting the "🤖 Spouštím…" opener
+   * message to the channel. Used by silent monitoring tasks that should only
+   * post real results (e.g. detected news), keeping the channel tidy.
+   */
+  suppress_opener?: number;
 }
 
 export interface TaskRunLog {

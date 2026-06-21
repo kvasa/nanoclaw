@@ -87,6 +87,12 @@ THREADING (Slack only):
       .describe(
         'Force the message to the main channel even when a thread is active. Use for final results / outcomes the user should see at the channel top level. Defaults to false (use active thread if present).',
       ),
+    return_ts: z
+      .boolean()
+      .optional()
+      .describe(
+        'When true, wait for the message to be posted and return its message ts (Slack only). Use this when you need to later edit_message or delete_message this exact message (e.g. an updatable status line). Adds a small delay; omit for normal fire-and-forget sends.',
+      ),
   },
   async (args) => {
     const threadTs = args.to_main_channel ? undefined : getThreadTs();
@@ -100,9 +106,109 @@ THREADING (Slack only):
       timestamp: new Date().toISOString(),
     };
 
+    if (!args.return_ts) {
+      writeIpcFile(MESSAGES_DIR, data);
+      return { content: [{ type: 'text' as const, text: 'Message sent.' }] };
+    }
+
+    // Round-trip: ask the host to post and write back the message ts.
+    const requestId = crypto.randomUUID();
+    data.requestId = requestId;
+    data.returnTs = 'true';
+    const responseFile = path.join(INPUT_DIR, `send_message_${requestId}.json`);
+    const TIMEOUT_MS = 15_000;
+    const POLL_MS = 250;
+
     writeIpcFile(MESSAGES_DIR, data);
 
-    return { content: [{ type: 'text' as const, text: 'Message sent.' }] };
+    const deadline = Date.now() + TIMEOUT_MS;
+    while (Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, POLL_MS));
+      if (fs.existsSync(responseFile)) {
+        try {
+          const response: { requestId: string; ts?: string } = JSON.parse(
+            fs.readFileSync(responseFile, 'utf-8'),
+          );
+          fs.unlinkSync(responseFile);
+          return {
+            content: [
+              {
+                type: 'text' as const,
+                text: response.ts
+                  ? `Message sent. ts=${response.ts}`
+                  : 'Message sent. (no ts — channel does not support it)',
+              },
+            ],
+          };
+        } catch (err) {
+          return {
+            content: [
+              {
+                type: 'text' as const,
+                text: `Message sent, but failed to read ts: ${err instanceof Error ? err.message : String(err)}`,
+              },
+            ],
+          };
+        }
+      }
+    }
+
+    return {
+      content: [
+        {
+          type: 'text' as const,
+          text: 'Message sent, but timed out waiting for ts.',
+        },
+      ],
+    };
+  },
+);
+
+server.tool(
+  'edit_message',
+  `Edit (update) a message previously sent by the assistant (Slack only). Pass the message_ts returned by send_message (with return_ts: true). Use this to update an in-place status line such as "last checked …" without posting a new message. Non-Slack channels ignore this.`,
+  {
+    message_ts: z
+      .string()
+      .describe('The ts of the message to edit (from send_message return_ts).'),
+    text: z.string().describe('The new message text.'),
+  },
+  async (args) => {
+    const data: Record<string, string | undefined> = {
+      type: 'edit_message',
+      chatJid,
+      messageTs: args.message_ts,
+      text: args.text,
+      groupFolder,
+      timestamp: new Date().toISOString(),
+    };
+
+    writeIpcFile(MESSAGES_DIR, data);
+
+    return { content: [{ type: 'text' as const, text: 'Message edited.' }] };
+  },
+);
+
+server.tool(
+  'delete_message',
+  `Delete a message previously sent by the assistant (Slack only). Pass the message_ts returned by send_message (with return_ts: true). Use this to remove a stale status message before reposting it so it stays the last message in the channel. Non-Slack channels ignore this.`,
+  {
+    message_ts: z
+      .string()
+      .describe('The ts of the message to delete (from send_message return_ts).'),
+  },
+  async (args) => {
+    const data: Record<string, string | undefined> = {
+      type: 'delete_message',
+      chatJid,
+      messageTs: args.message_ts,
+      groupFolder,
+      timestamp: new Date().toISOString(),
+    };
+
+    writeIpcFile(MESSAGES_DIR, data);
+
+    return { content: [{ type: 'text' as const, text: 'Message deleted.' }] };
   },
 );
 

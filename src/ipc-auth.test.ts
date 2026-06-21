@@ -13,6 +13,7 @@ import {
   setRegisteredGroup,
 } from './db.js';
 import { processAnnounceStartIpc, processTaskIpc, IpcDeps } from './ipc.js';
+import { IpcFileMessageSchema } from './schemas.js';
 import { RegisteredGroup } from './types.js';
 
 // Set up registered groups used across tests
@@ -479,6 +480,59 @@ describe('IPC send_file authorization', () => {
     expect(
       isMessageAuthorized('other-group', false, 'unknown@g.us', groups),
     ).toBe(false);
+  });
+});
+
+// --- edit_message / delete_message / return_ts schemas ---
+
+describe('edit/delete message IPC schemas', () => {
+  it('accepts a valid edit_message', () => {
+    const parsed = IpcFileMessageSchema.safeParse({
+      type: 'edit_message',
+      chatJid: 'slack:C0123456789',
+      messageTs: '1700000000.000100',
+      text: '✅ Poslední kontrola: dnes',
+    });
+    expect(parsed.success).toBe(true);
+  });
+
+  it('accepts a valid delete_message', () => {
+    const parsed = IpcFileMessageSchema.safeParse({
+      type: 'delete_message',
+      chatJid: 'slack:C0123456789',
+      messageTs: '1700000000.000100',
+    });
+    expect(parsed.success).toBe(true);
+  });
+
+  it('rejects edit_message without messageTs', () => {
+    const parsed = IpcFileMessageSchema.safeParse({
+      type: 'edit_message',
+      chatJid: 'slack:C0123456789',
+      text: 'hi',
+    });
+    expect(parsed.success).toBe(false);
+  });
+
+  it('accepts a message with returnTs + requestId', () => {
+    const parsed = IpcFileMessageSchema.safeParse({
+      type: 'message',
+      chatJid: 'slack:C0123456789',
+      text: 'status',
+      returnTs: 'true',
+      requestId: 'abc-123_DEF',
+    });
+    expect(parsed.success).toBe(true);
+  });
+
+  it('rejects a message with an invalid requestId', () => {
+    const parsed = IpcFileMessageSchema.safeParse({
+      type: 'message',
+      chatJid: 'slack:C0123456789',
+      text: 'status',
+      requestId: 'bad id!',
+    });
+    expect(parsed.success).toBe(false);
   });
 });
 

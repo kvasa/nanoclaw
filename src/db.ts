@@ -107,6 +107,17 @@ function createSchema(database: Database.Database): void {
     /* column already exists */
   }
 
+  // Add suppress_opener column if it doesn't exist (migration for existing DBs).
+  // When 1, the scheduler skips the "🤖 Spouštím…" opener message so silent
+  // monitoring tasks keep their channel tidy (only real results are posted).
+  try {
+    database.exec(
+      `ALTER TABLE scheduled_tasks ADD COLUMN suppress_opener INTEGER DEFAULT 0`,
+    );
+  } catch {
+    /* column already exists */
+  }
+
   // Add is_bot_message column if it doesn't exist (migration for existing DBs)
   try {
     database.exec(

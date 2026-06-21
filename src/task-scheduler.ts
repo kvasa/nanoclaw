@@ -197,7 +197,7 @@ export async function runTask(
   // channel, not the thread. This pattern was previously DIY-implemented in
   // task prompts via shell hacks on /workspace/ipc/thread_ts.
   let openerTs: string | undefined;
-  if (deps.postTaskOpener) {
+  if (deps.postTaskOpener && !task.suppress_opener) {
     try {
       openerTs = await deps.postTaskOpener(
         task.chat_jid,
