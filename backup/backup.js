@@ -15,13 +15,15 @@ const MAGIC = Buffer.from('NCBK');
 const FORMAT_VERSION = 1;
 const PBKDF2_ITERATIONS = 100_000;
 const MAX_FILE_SIZE = 50 * 1024 * 1024; // 50MB
+const RETENTION_DAYS = 7; // Delete encrypted backups older than this
 
 const SKIP_DIRS = new Set([
   'logs', 'node_modules', '.git', 'dist', 'ipc',
-  '.next',        // Next.js build cache
-  'venv', '.venv', // Python virtual environments
-  '__pycache__',   // Python bytecode cache
-  '.cache',        // Generic build caches
+  '.next',          // Next.js build cache
+  'venv', '.venv',  // Python virtual environments
+  '__pycache__',    // Python bytecode cache
+  '.cache',         // Generic build caches
+  'slack-uploads',  // Inbound/outbound chat attachments (bulky media)
 ]);
 const SKIP_FILE_PATTERNS = [
   /^core\.\d+$/,
@@ -30,6 +32,11 @@ const SKIP_FILE_PATTERNS = [
   /\.tgz$/,          // Tar archives
   /\.tar\.gz$/,      // Tar archives
   /\.so(\.\d+)*$/,   // Shared libraries (.so, .so.1.14.1)
+  // Bulky binary media — not part of restorable system state.
+  // Keep the backup focused on scripts, code, memory, config and the DB.
+  /\.(jpe?g|png|gif|webp|bmp|tiff?|heic|heif|ico|svg)$/i, // Images
+  /\.(m4a|mp3|wav|ogg|opus|aac|flac|mp4|mov|webm|mkv|avi)$/i, // Audio/video
+  /\.pdf$/i,         // PDF documents
 ];
 
 // ── .env parser (port of src/env.ts) ────────────────────────────────
@@ -213,9 +220,102 @@ function timestamp() {
   return new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
 }
 
+// Delete encrypted backups older than RETENTION_DAYS. Best-effort:
+// a failure to remove one stale file must never fail the backup run.
+function pruneOldBackups() {
+  if (!fs.existsSync(BACKUPS_DIR)) return;
+  const cutoff = Date.now() - RETENTION_DAYS * 24 * 60 * 60 * 1000;
+  let removed = 0;
+  let freed = 0;
+  for (const name of fs.readdirSync(BACKUPS_DIR)) {
+    if (!name.endsWith('.enc')) continue;
+    const filePath = path.join(BACKUPS_DIR, name);
+    try {
+      const st = fs.statSync(filePath);
+      if (st.mtimeMs >= cutoff) continue;
+      fs.unlinkSync(filePath);
+      removed++;
+      freed += st.size;
+    } catch (err) {
+      console.log(`  [warn] could not prune ${name}: ${err.message}`);
+    }
+  }
+  if (removed > 0) {
+    console.log(
+      `  Pruned ${removed} backup(s) older than ${RETENTION_DAYS} days (freed ${formatBytes(freed)})`
+    );
+  } else {
+    console.log(`  No backups older than ${RETENTION_DAYS} days to prune`);
+  }
+}
+
+// ── Slack upload ────────────────────────────────────────────────────
+
+// Resolve the target Slack channel id (without the "slack:" prefix).
+// Priority: BACKUP_SLACK_CHANNEL env, then the dedicated "backups" group,
+// then the is_main=1 group as a last resort.
+const BACKUP_CHANNEL_FOLDER = 'backups';
+
+function resolveSlackChannelId(envChannel) {
+  if (envChannel) return envChannel.replace(/^slack:/, '');
+  const dbPath = path.join(PROJECT_ROOT, 'store', 'messages.db');
+  if (!fs.existsSync(dbPath)) return null;
+  try {
+    const require = createRequire(import.meta.url);
+    const Database = require('better-sqlite3');
+    const db = new Database(dbPath, { readonly: true });
+    const row =
+      db
+        .prepare('SELECT jid FROM registered_groups WHERE folder = ? LIMIT 1')
+        .get(BACKUP_CHANNEL_FOLDER) ||
+      db
+        .prepare('SELECT jid FROM registered_groups WHERE is_main = 1 LIMIT 1')
+        .get();
+    db.close();
+    if (!row || !row.jid) return null;
+    return String(row.jid).replace(/^slack:/, '');
+  } catch {
+    return null;
+  }
+}
+
+// Upload the encrypted backup straight to Slack. Best-effort: a failed
+// upload (no token, channel, network) must not fail the backup itself —
+// the local archive and prune have already succeeded by this point.
+async function sendBackupToSlack(encFilePath) {
+  const env = readEnvFile(['SLACK_BOT_TOKEN', 'BACKUP_SLACK_CHANNEL']);
+  const botToken = env.SLACK_BOT_TOKEN || process.env.SLACK_BOT_TOKEN;
+  if (!botToken) {
+    console.log('  [skip] SLACK_BOT_TOKEN not set — backup not sent to Slack');
+    return;
+  }
+  const channelId = resolveSlackChannelId(
+    env.BACKUP_SLACK_CHANNEL || process.env.BACKUP_SLACK_CHANNEL
+  );
+  if (!channelId) {
+    console.log('  [skip] no Slack channel resolved — backup not sent');
+    return;
+  }
+  try {
+    const require = createRequire(import.meta.url);
+    const { WebClient } = require('@slack/web-api');
+    const client = new WebClient(botToken);
+    const fileData = fs.readFileSync(encFilePath);
+    await client.filesUploadV2({
+      channel_id: channelId,
+      file: fileData,
+      filename: path.basename(encFilePath),
+      initial_comment: 'Automatická záloha NanoClaw (šifrovaná).',
+    });
+    console.log(`  [ok] sent to Slack channel ${channelId} (${formatBytes(fileData.length)})`);
+  } catch (err) {
+    console.log(`  [warn] Slack upload failed: ${err.message}`);
+  }
+}
+
 // ── Main ────────────────────────────────────────────────────────────
 
-function main() {
+async function main() {
   console.log('NanoClaw Backup\n');
 
   // 1. Read password
@@ -365,6 +465,20 @@ function main() {
     console.log(`  File: ${encFinalPath}`);
     console.log(`  Size: ${formatBytes(encSize)}`);
     console.log(`  Files: ${stats.files}`);
+
+    // Retention: remove backups older than RETENTION_DAYS. Only after a
+    // successful new backup so we never prune our way to zero on failure.
+    console.log('\nPruning old backups...');
+    pruneOldBackups();
+
+    // Send the encrypted archive to Slack (best-effort; never fails the run).
+    // Pass --no-slack to create+prune locally without sending (useful for tests).
+    if (process.argv.includes('--no-slack')) {
+      console.log('\n[--no-slack] Skipping Slack upload');
+    } else {
+      console.log('\nSending to Slack...');
+      await sendBackupToSlack(encFinalPath);
+    }
   } finally {
     // Cleanup
     fs.rmSync(tempDir, { recursive: true, force: true });
@@ -372,4 +486,7 @@ function main() {
   }
 }
 
-main();
+main().catch((err) => {
+  console.error('Backup failed:', err);
+  process.exit(1);
+});
