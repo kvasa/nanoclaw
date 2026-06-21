@@ -62,7 +62,7 @@ ENV PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH=/usr/bin/chromium
 # container/skills/agent-browser/SKILL.md from `agent-browser skills get core`
 # and bump the `source-version` field in its frontmatter (see the HTML comment
 # at the top of that file for the exact commands).
-RUN npm install -g agent-browser@0.26.0 && \
+RUN npm install -g agent-browser@0.29.1 && \
     find /usr/local/lib/node_modules/agent-browser/bin \
         -type f -name 'agent-browser-*' \
         ! -name 'agent-browser-linux-x64' -delete && \
