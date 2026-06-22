@@ -413,16 +413,23 @@ async function runAgent(
           output.result &&
           /API Error: 400\b/.test(output.result) &&
           /Could not process/.test(output.result);
-        if (isCorruptedSession) {
+        // Detect a stale/missing session: the SDK was asked to resume a
+        // session whose conversation file no longer exists on disk.
+        const isStaleSession =
+          /No conversation found with session ID/.test(output.result ?? '') ||
+          /No conversation found with session ID/.test(output.error ?? '');
+        if (isCorruptedSession || isStaleSession) {
           logger.warn(
-            { group: group.name, error: output.result },
-            'Intercepted corrupted session error, clearing session',
+            { group: group.name, error: output.error ?? output.result },
+            isStaleSession
+              ? 'Intercepted stale session error, clearing session'
+              : 'Intercepted corrupted session error, clearing session',
           );
           delete sessions[group.folder];
           deleteSession(group.folder);
           // Convert to error so it doesn't get forwarded to user
           output.status = 'error';
-          output.error = output.result ?? undefined;
+          output.error = output.error ?? output.result ?? undefined;
           output.result = null;
           return; // Don't forward to user
         }
@@ -435,51 +442,68 @@ async function runAgent(
     : undefined;
 
   try {
-    const output = await runContainerAgent(
-      group,
-      {
-        prompt,
-        sessionId,
-        groupFolder: group.folder,
-        chatJid,
-        isMain,
-        assistantName: ASSISTANT_NAME,
-        enabledMcpServers: group.containerConfig?.enabledMcpServers,
-        triggerMessageTs,
-      },
-      (proc, containerName) =>
-        queue.registerProcess(chatJid, proc, containerName, group.folder),
-      wrappedOnOutput,
-    );
-
-    if (output.newSessionId) {
-      sessions[group.folder] = output.newSessionId;
-      setSession(group.folder, output.newSessionId);
-    }
-
-    if (output.status === 'error') {
-      logger.error(
-        { group: group.name, error: output.error },
-        'Container agent error',
+    // Resume the stored session on the first attempt. If the resume fails
+    // because the session is stale (its conversation file is gone) or
+    // corrupted, the session is cleared and we retry once from scratch so
+    // the user's message isn't silently dropped.
+    let attemptSessionId: string | undefined = sessionId;
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const output = await runContainerAgent(
+        group,
+        {
+          prompt,
+          sessionId: attemptSessionId,
+          groupFolder: group.folder,
+          chatJid,
+          isMain,
+          assistantName: ASSISTANT_NAME,
+          enabledMcpServers: group.containerConfig?.enabledMcpServers,
+          triggerMessageTs,
+        },
+        (proc, containerName) =>
+          queue.registerProcess(chatJid, proc, containerName, group.folder),
+        wrappedOnOutput,
       );
-      // If the error indicates corrupted session data (e.g. expired image),
-      // clear the session so the next invocation starts fresh.
-      if (
-        output.error &&
+
+      const isStaleSession =
+        !!output.error &&
+        /No conversation found with session ID/.test(output.error);
+      const isCorruptedSession =
+        !!output.error &&
         /\b400\b/.test(output.error) &&
-        /Could not process/.test(output.error)
-      ) {
-        delete sessions[group.folder];
-        deleteSession(group.folder);
-        logger.warn(
-          { group: group.name },
-          'Cleared corrupted session after image processing error',
-        );
+        /Could not process/.test(output.error);
+
+      // Never persist the id of a session we couldn't actually use.
+      if (output.newSessionId && !isStaleSession && !isCorruptedSession) {
+        sessions[group.folder] = output.newSessionId;
+        setSession(group.folder, output.newSessionId);
       }
-      return 'error';
+
+      if (output.status === 'error') {
+        if (isStaleSession || isCorruptedSession) {
+          delete sessions[group.folder];
+          deleteSession(group.folder);
+          logger.warn(
+            { group: group.name, stale: isStaleSession },
+            'Cleared unusable session; starting fresh',
+          );
+          // Retry once from a clean session before giving up.
+          if (attempt === 0 && attemptSessionId) {
+            attemptSessionId = undefined;
+            continue;
+          }
+        }
+        logger.error(
+          { group: group.name, error: output.error },
+          'Container agent error',
+        );
+        return 'error';
+      }
+
+      return 'success';
     }
 
-    return 'success';
+    return 'error';
   } catch (err) {
     logger.error({ group: group.name, err }, 'Agent error');
     return 'error';
