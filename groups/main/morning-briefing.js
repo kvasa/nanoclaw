@@ -72,6 +72,10 @@ function parseIcalEvents(icalStr, targetDate) {
     const dtstartRaw = get('DTSTART');
     if (!summary || !dtstartRaw) continue;
 
+    const dtstartLine = block.match(/^DTSTART[^\r\n]*/m)?.[0] || '';
+    const tzidMatch = dtstartLine.match(/TZID=([^:;]+)/);
+    const tzid = tzidMatch?.[1];
+
     const raw = dtstartRaw.includes(':') ? dtstartRaw.split(':').pop() : dtstartRaw;
     const isAllDay = /^\d{8}$/.test(raw);
     let date;
@@ -80,7 +84,21 @@ function parseIcalEvents(icalStr, targetDate) {
     } else {
       const isUTC = raw.endsWith('Z');
       const base = `${raw.slice(0,4)}-${raw.slice(4,6)}-${raw.slice(6,8)}T${raw.slice(9,11)}:${raw.slice(11,13)}:00`;
-      date = new Date(isUTC ? base + 'Z' : base);
+      if (isUTC) {
+        date = new Date(base + 'Z');
+      } else if (tzid) {
+        // Parse local time in the given TZID timezone
+        const dt = new Date(base + 'Z');
+        const parts = new Intl.DateTimeFormat('en-US', {
+          timeZone: tzid, year: 'numeric', month: '2-digit', day: '2-digit',
+          hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false
+        }).formatToParts(dt);
+        const p = Object.fromEntries(parts.map(x => [x.type, x.value]));
+        const tzDt = new Date(`${p.year}-${p.month}-${p.day}T${p.hour}:${p.minute}:${p.second}Z`);
+        date = new Date(dt.getTime() + (dt.getTime() - tzDt.getTime()));
+      } else {
+        date = new Date(base);
+      }
     }
 
     // Filter to target date in Prague timezone

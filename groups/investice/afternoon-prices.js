@@ -53,13 +53,17 @@ async function run() {
   let totalCZK = cashCZK;
   let totalPrevCZK = cashCZK;
   for (const t of positions) {
-    const q = await yf.quote(t.yahoo).catch(e => { throw new Error(t.yahoo + ' (' + t.name + '): ' + e.message); });
+    const q = await yf.quote(t.yahoo).catch(() => null);
+    if (!q || q.regularMarketPrice == null) {
+      posData.push({ t: { ...t }, day: null, price: null, currency: t.currency, valCZK: null });
+      continue;
+    }
     const day = q.regularMarketChangePercent;
     const price = q.regularMarketPrice;
-    const name = t.name;
+    const name = t.name !== t.id ? t.name : (q.shortName || q.longName || t.id);
     const rate = t.currency === 'EUR' ? eurRate : usdRate;
     const valCZK = t.count * price * rate;
-    const prevValCZK = valCZK / (1 + day / 100);
+    const prevValCZK = day != null ? valCZK / (1 + day / 100) : valCZK;
     totalCZK += valCZK;
     totalPrevCZK += prevValCZK;
     posData.push({ t: { ...t, name }, day, price, currency: q.currency, valCZK });
@@ -69,10 +73,13 @@ async function run() {
   posData.sort((a, b) => Math.abs(b.day) - Math.abs(a.day));
 
   const posLines = posData.map(({ t, day, price, currency, valCZK }) => {
+    if (price == null) {
+      return '⚪ *' + t.name + '* (' + t.id + ') - bez dat';
+    }
     const icon = day >= 0 ? '🟢' : '🔴';
     return icon + ' *' + t.name + '* (' + t.id + ') - ' + t.count + ' Ks\n   '
       + price.toFixed(2) + ' ' + currency + '  '
-      + s(day) + day.toFixed(2) + '%  →  '
+      + (day != null ? s(day) + day.toFixed(2) + '%' : 'N/A') + '  →  '
       + fmt(valCZK) + ' Kč';
   });
 
@@ -80,6 +87,7 @@ async function run() {
   const idxLines = [];
   for (const idx of indices) {
     const q = await yf.quote(idx.yahoo).catch(e => { throw new Error(idx.yahoo + ' (' + idx.name + '): ' + e.message); });
+    if (!q || q.regularMarketPrice == null) throw new Error(idx.yahoo + ' (' + idx.name + '): no market data returned');
     const day = q.regularMarketChangePercent;
     const icon = day >= 0 ? '🟢' : '🔴';
     idxLines.push(icon + ' ' + idx.name + ': ' + fmt(q.regularMarketPrice) + ' (' + s(day) + day.toFixed(2) + '%)');

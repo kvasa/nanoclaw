@@ -1,12 +1,18 @@
 // Načte aktuální pozice portfolia z Google Sheets
 const { getValues } = require('./gsheets.js');
 
+// Manuální override Yahoo Finance tickeru (burza v Sheetu neodpovídá Yahoo symbolu)
+const YAHOO_TICKER_OVERRIDE = {
+  P911: 'P911.DE', // Porsche: Yahoo nemá .PA, používá .DE (XETRA)
+};
+
 // Pěkné zkrácené názvy pro známé tickery
 const NAMES = {
   VUAA: 'Vanguard S&P 500',
   VWRA: 'Vanguard All-World',
   FWRA: 'Invesco All-World',
   XNAS: 'Xtrackers NASDAQ 100',
+  ALLW: 'Xtrackers All-World',
   GLE:  'Société Générale',
   ASML: 'ASML Holding',
 };
@@ -50,7 +56,7 @@ async function getPortfolioFromSheet() {
     if (!count || count <= 0) continue;
 
     const suffix = yahooSuffix(exchange, currency);
-    const yahooTicker = ticker + suffix;
+    const yahooTicker = YAHOO_TICKER_OVERRIDE[ticker] ?? (ticker + suffix);
 
     positions.push({ id: ticker, name: NAMES[ticker] || ticker, yahoo: yahooTicker, count, currency });
   }
