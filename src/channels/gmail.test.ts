@@ -1,8 +1,15 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
+// Baseline: GMAIL_ALLOW_ALL_SENDERS defaults to true here so the many
+// pre-existing tests below (about retry/failure/processed-marking behavior,
+// unrelated to the allowlist) keep working unmodified. The
+// "sender allowlist gating" describe block below exercises the fail-closed
+// default explicitly by overriding this via vi.doMock + a fresh dynamic
+// import of the module under test.
 vi.mock('../config.js', () => ({
   GMAIL_ALLOWED_SENDERS: new Set<string>(),
   GMAIL_ALLOWED_DOMAINS: new Set<string>(),
+  GMAIL_ALLOW_ALL_SENDERS: true,
   GMAIL_RATE_LIMIT_GLOBAL: 1000,
   GMAIL_RATE_LIMIT_OUTGOING: 1000,
   GMAIL_RATE_LIMIT_PER_SENDER: 1000,
@@ -27,6 +34,7 @@ vi.mock('../db.js', () => ({
 
 import { GmailChannel, GmailChannelOpts } from './gmail.js';
 import { addGmailProcessedId } from '../db.js';
+import { GMAIL_ALLOWED_SENDERS, GMAIL_ALLOWED_DOMAINS } from '../config.js';
 import { RegisteredGroup } from '../types.js';
 
 function makeOpts(overrides?: Partial<GmailChannelOpts>): GmailChannelOpts {
@@ -281,6 +289,120 @@ describe('GmailChannel', () => {
       // bad-msg must not have been recorded (it's retried, not given up on
       // after a single failure).
       expect(addGmailProcessedId).not.toHaveBeenCalledWith('bad-msg');
+    });
+  });
+
+  describe('sender allowlist gating', () => {
+    beforeEach(() => {
+      vi.mocked(addGmailProcessedId).mockClear();
+      GMAIL_ALLOWED_SENDERS.clear();
+      GMAIL_ALLOWED_DOMAINS.clear();
+    });
+
+    it('rejects every sender when no allowlist is configured and GMAIL_ALLOW_ALL_SENDERS is unset', async () => {
+      // Override the module-level baseline (GMAIL_ALLOW_ALL_SENDERS: true,
+      // kept for the unrelated tests above) to exercise the real fail-closed
+      // default via a fresh import of the module under test.
+      vi.resetModules();
+      vi.doMock('../config.js', () => ({
+        GMAIL_ALLOWED_SENDERS: new Set<string>(),
+        GMAIL_ALLOWED_DOMAINS: new Set<string>(),
+        GMAIL_ALLOW_ALL_SENDERS: false,
+        GMAIL_RATE_LIMIT_GLOBAL: 1000,
+        GMAIL_RATE_LIMIT_OUTGOING: 1000,
+        GMAIL_RATE_LIMIT_PER_SENDER: 1000,
+        GMAIL_RATE_LIMIT_READ_EMAILS: 1000,
+        GMAIL_RATE_LIMIT_WINDOW_MS: 3600000,
+      }));
+
+      const { GmailChannel: FreshGmailChannel } = await import('./gmail.js');
+      const { addGmailProcessedId: freshAddGmailProcessedId } =
+        await import('../db.js');
+
+      const onMessage = vi.fn();
+      const opts = mainGroupOpts(onMessage);
+      const ch = new FreshGmailChannel(opts);
+      const fakeGmail = makeFakeGmail();
+      primeChannel(ch, fakeGmail);
+
+      fakeGmail.users.messages.list.mockResolvedValue({
+        data: { messages: [{ id: 'msg1' }] },
+      });
+      fakeGmail.users.messages.get.mockResolvedValue(
+        makeFakeMessage({ from: 'Mallory <mallory@evil.example>' }),
+      );
+
+      await (
+        ch as unknown as { pollForMessages: () => Promise<void> }
+      ).pollForMessages();
+
+      expect(onMessage).not.toHaveBeenCalled();
+      // Rejected messages are still marked read so they don't keep re-appearing.
+      expect(fakeGmail.users.messages.modify).toHaveBeenCalledWith({
+        userId: 'me',
+        id: 'msg1',
+        requestBody: { removeLabelIds: ['UNREAD'] },
+      });
+      // ...but they ARE durably recorded as processed by the poll loop
+      // (fail-closed rejection is not a transient failure — no throw).
+      expect(freshAddGmailProcessedId).toHaveBeenCalledWith('msg1');
+    });
+
+    it('delivers from any sender when GMAIL_ALLOW_ALL_SENDERS is explicitly set (legacy opt-out)', async () => {
+      // Uses the module-level baseline mock, which already sets
+      // GMAIL_ALLOW_ALL_SENDERS: true.
+      const onMessage = vi.fn();
+      const opts = mainGroupOpts(onMessage);
+      const ch = new GmailChannel(opts);
+      const fakeGmail = makeFakeGmail();
+      primeChannel(ch, fakeGmail);
+
+      fakeGmail.users.messages.list.mockResolvedValue({
+        data: { messages: [{ id: 'msg1' }] },
+      });
+      fakeGmail.users.messages.get.mockResolvedValue(
+        makeFakeMessage({ from: 'Mallory <mallory@evil.example>' }),
+      );
+
+      await callPoll(ch);
+
+      expect(onMessage).toHaveBeenCalledTimes(1);
+    });
+
+    it('with an allowlist configured, delivers an allowed sender and rejects a disallowed one', async () => {
+      GMAIL_ALLOWED_SENDERS.add('alice@example.com');
+
+      const onMessage = vi.fn();
+      const opts = mainGroupOpts(onMessage);
+      const ch = new GmailChannel(opts);
+      const fakeGmail = makeFakeGmail();
+      primeChannel(ch, fakeGmail);
+
+      fakeGmail.users.messages.list.mockResolvedValue({
+        data: { messages: [{ id: 'allowed-msg' }, { id: 'blocked-msg' }] },
+      });
+      fakeGmail.users.messages.get.mockImplementation(
+        async (req: { id?: string }) => {
+          if (req.id === 'allowed-msg') {
+            return makeFakeMessage({
+              from: 'Alice <alice@example.com>',
+              threadId: 'thread-allowed',
+            });
+          }
+          return makeFakeMessage({
+            from: 'Mallory <mallory@evil.example>',
+            threadId: 'thread-blocked',
+          });
+        },
+      );
+
+      await callPoll(ch);
+
+      expect(onMessage).toHaveBeenCalledTimes(1);
+      expect(onMessage).toHaveBeenCalledWith(
+        'main-jid',
+        expect.objectContaining({ sender: 'alice@example.com' }),
+      );
     });
   });
 });

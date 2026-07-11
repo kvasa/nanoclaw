@@ -12,6 +12,7 @@ import {
 } from '../db.js';
 import { logger } from '../logger.js';
 import {
+  GMAIL_ALLOW_ALL_SENDERS,
   GMAIL_ALLOWED_DOMAINS,
   GMAIL_ALLOWED_SENDERS,
   GMAIL_RATE_LIMIT_GLOBAL,
@@ -27,6 +28,10 @@ import {
   OnInboundMessage,
   RegisteredGroup,
 } from '../types.js';
+
+// Logged once per process so operators aren't spammed when the inbox is
+// unconfigured but continues to receive external mail.
+let warnedNoAllowlist = false;
 
 export interface GmailChannelOpts {
   onMessage: OnInboundMessage;
@@ -546,28 +551,37 @@ export class GmailChannel implements Channel {
     // Skip emails from self (our own replies) — case-insensitive per RFC 5321
     if (senderEmail.toLowerCase() === this.userEmail.toLowerCase()) return;
 
-    // Sender allowlist check (if configured)
-    if (GMAIL_ALLOWED_SENDERS.size > 0 || GMAIL_ALLOWED_DOMAINS.size > 0) {
-      const emailLower = senderEmail.toLowerCase();
-      const domain = emailLower.split('@')[1] || '';
-      const allowed =
-        GMAIL_ALLOWED_SENDERS.has(emailLower) ||
-        GMAIL_ALLOWED_DOMAINS.has(domain);
-      if (!allowed) {
-        logger.info(
-          { from: senderEmail, subject },
-          'Gmail email rejected: sender not in allowlist',
+    // Sender allowlist check. Fail closed: with no allowlist configured,
+    // inbound emails do not trigger the agent unless GMAIL_ALLOW_ALL_SENDERS
+    // is explicitly set.
+    const allowlistConfigured =
+      GMAIL_ALLOWED_SENDERS.size > 0 || GMAIL_ALLOWED_DOMAINS.size > 0;
+    const emailLower = senderEmail.toLowerCase();
+    const domain = emailLower.split('@')[1] || '';
+    const allowed = allowlistConfigured
+      ? GMAIL_ALLOWED_SENDERS.has(emailLower) ||
+        GMAIL_ALLOWED_DOMAINS.has(domain)
+      : GMAIL_ALLOW_ALL_SENDERS;
+    if (!allowed) {
+      if (!allowlistConfigured && !warnedNoAllowlist) {
+        warnedNoAllowlist = true;
+        logger.warn(
+          'Gmail email rejected: no allowlist configured and GMAIL_ALLOW_ALL_SENDERS is not set — see .env.example',
         );
-        // Mark as read so it does not keep re-appearing
-        try {
-          await this.gmail.users.messages.modify({
-            userId: 'me',
-            id: messageId,
-            requestBody: { removeLabelIds: ['UNREAD'] },
-          });
-        } catch (_) {}
-        return;
       }
+      logger.info(
+        { from: senderEmail, subject },
+        'Gmail email rejected: sender not in allowlist',
+      );
+      // Mark as read so it does not keep re-appearing
+      try {
+        await this.gmail.users.messages.modify({
+          userId: 'me',
+          id: messageId,
+          requestBody: { removeLabelIds: ['UNREAD'] },
+        });
+      } catch (_) {}
+      return;
     }
 
     // Rate limiting

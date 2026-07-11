@@ -15,6 +15,7 @@ const envConfig = readEnvFile([
   'API_SLACK_CHANNEL_ID',
   'GMAIL_ALLOWED_SENDERS',
   'GMAIL_ALLOWED_DOMAINS',
+  'GMAIL_ALLOW_ALL_SENDERS',
   'GMAIL_RATE_LIMIT_PER_SENDER',
   'GMAIL_RATE_LIMIT_GLOBAL',
   'GMAIL_RATE_LIMIT_WINDOW_MS',
@@ -147,6 +148,12 @@ export const GMAIL_ALLOWED_DOMAINS: Set<string> = new Set(
         .filter(Boolean)
     : [],
 );
+
+/** Explicit opt-out of the sender allowlist. Without it, an unconfigured
+ *  allowlist means Gmail triggering is disabled (fail closed). */
+export const GMAIL_ALLOW_ALL_SENDERS =
+  (process.env.GMAIL_ALLOW_ALL_SENDERS || envConfig.GMAIL_ALLOW_ALL_SENDERS) ===
+  '1';
 
 // Rate limiting: max emails processed per sender per window, and global max per window.
 // GMAIL_RATE_LIMIT_PER_SENDER: max emails from one sender per window (default 5)
