@@ -105,6 +105,11 @@ export function startIpcWatcher(deps: IpcDeps): void {
   const ipcBaseDir = path.join(DATA_DIR, 'ipc');
   fs.mkdirSync(ipcBaseDir, { recursive: true });
 
+  // This loop is strictly sequential: every handler is awaited, and the next
+  // pass is only scheduled after the current one finishes. Nothing in it may
+  // await a human — a handler that needs user approval (send_email,
+  // compose_email) must detach the wait (fire-and-forget with .catch) so one
+  // pending approval cannot stall IPC for every group.
   const processIpcFiles = async () => {
     // Scan all group IPC directories (identity determined by directory)
     let groupFolders: string[];
@@ -175,20 +180,29 @@ export function startIpcWatcher(deps: IpcDeps): void {
                       'Unauthorized send_email attempt blocked',
                     );
                   } else if (deps.sendEmailReply) {
-                    const sent = await deps.sendEmailReply(
-                      data.threadJid,
-                      data.text,
-                    );
-                    logger.info(
-                      { threadJid: data.threadJid, sent, sourceGroup },
-                      'IPC send_email resolved',
-                    );
-                    if (mainJid) {
-                      const feedback = sent
-                        ? `✅ Email reply odeslán`
-                        : `❌ Email reply zamítnut (nebyl odeslán)`;
-                      await deps.sendMessage(mainJid, feedback);
-                    }
+                    // Don't await: the approval gate waits on a human (up to 10
+                    // minutes). Awaiting it here would stall the IPC watcher —
+                    // and therefore every group's IPC — until they click.
+                    void deps
+                      .sendEmailReply(data.threadJid, data.text)
+                      .then(async (sent) => {
+                        logger.info(
+                          { threadJid: data.threadJid, sent, sourceGroup },
+                          'IPC send_email resolved',
+                        );
+                        if (mainJid) {
+                          const feedback = sent
+                            ? `✅ Email reply odeslán`
+                            : `❌ Email reply zamítnut (nebyl odeslán)`;
+                          await deps.sendMessage(mainJid, feedback);
+                        }
+                      })
+                      .catch((err) => {
+                        logger.error(
+                          { threadJid: data.threadJid, sourceGroup, err },
+                          'IPC send_email failed',
+                        );
+                      });
                   } else {
                     logger.warn(
                       { threadJid: data.threadJid, sourceGroup },
@@ -206,21 +220,27 @@ export function startIpcWatcher(deps: IpcDeps): void {
                       'compose_email requested but Gmail channel not available',
                     );
                   } else {
-                    const sent = await deps.composeEmail(
-                      data.to,
-                      data.subject,
-                      data.body,
-                    );
-                    logger.info(
-                      { to: data.to, sent, sourceGroup },
-                      'IPC compose_email resolved',
-                    );
-                    if (mainJid) {
-                      const feedback = sent
-                        ? `✅ Email odeslán na ${data.to}`
-                        : `❌ Email zamítnut (nebyl odeslán)`;
-                      await deps.sendMessage(mainJid, feedback);
-                    }
+                    // Don't await — same reasoning as send_email above.
+                    void deps
+                      .composeEmail(data.to, data.subject, data.body)
+                      .then(async (sent) => {
+                        logger.info(
+                          { to: data.to, sent, sourceGroup },
+                          'IPC compose_email resolved',
+                        );
+                        if (mainJid) {
+                          const feedback = sent
+                            ? `✅ Email odeslán na ${data.to}`
+                            : `❌ Email zamítnut (nebyl odeslán)`;
+                          await deps.sendMessage(mainJid, feedback);
+                        }
+                      })
+                      .catch((err) => {
+                        logger.error(
+                          { to: data.to, sourceGroup, err },
+                          'IPC compose_email failed',
+                        );
+                      });
                   }
                 } else if (data.type === 'announce_start') {
                   await processAnnounceStartIpc(
