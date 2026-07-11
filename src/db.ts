@@ -711,6 +711,29 @@ export function pruneOldGmailProcessedIds(days = 30): void {
   );
 }
 
+/**
+ * Delete message history older than N days. Nothing else prunes `messages`, so
+ * without this the table grows for the life of the installation. Note this
+ * also bounds how far back an agent can see: getMessagesSince reads from this
+ * table. Returns the number of rows deleted.
+ */
+export function pruneOldMessages(days: number): number {
+  const cutoff = new Date(Date.now() - days * 86_400_000).toISOString();
+  const info = db
+    .prepare(`DELETE FROM messages WHERE timestamp < ?`)
+    .run(cutoff);
+  return info.changes;
+}
+
+/** Delete scheduled-task run logs older than N days. Returns rows deleted. */
+export function pruneOldTaskRunLogs(days: number): number {
+  const cutoff = new Date(Date.now() - days * 86_400_000).toISOString();
+  const info = db
+    .prepare(`DELETE FROM task_run_logs WHERE run_at < ?`)
+    .run(cutoff);
+  return info.changes;
+}
+
 // --- JSON migration ---
 
 function migrateJsonState(): void {

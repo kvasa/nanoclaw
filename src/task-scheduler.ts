@@ -4,8 +4,10 @@ import fs from 'fs';
 
 import {
   ASSISTANT_NAME,
+  MESSAGE_RETENTION_DAYS,
   SCHEDULER_POLL_INTERVAL,
   TASK_CLOSE_DELAY_MS,
+  TASK_LOG_RETENTION_DAYS,
   TIMEZONE,
 } from './config.js';
 import {
@@ -18,6 +20,8 @@ import {
   getDueTasks,
   getTaskById,
   logTaskRun,
+  pruneOldMessages,
+  pruneOldTaskRunLogs,
   updateTask,
   updateTaskAfterRun,
 } from './db.js';
@@ -310,7 +314,29 @@ export function startSchedulerLoop(deps: SchedulerDependencies): void {
   schedulerRunning = true;
   logger.info('Scheduler loop started');
 
+  // Daily retention prune, hosted here because this loop already ticks
+  // continuously. lastPruneAt starts at 0, so the first prune runs on the
+  // first tick after startup and deletes the accumulated backlog.
+  let lastPruneAt = 0;
+  const PRUNE_INTERVAL_MS = 24 * 60 * 60 * 1000;
+
   const loop = async () => {
+    // Own try/catch: set lastPruneAt before pruning so a throwing prune
+    // waits a day instead of retrying every tick, and a prune failure never
+    // stops due tasks from running.
+    if (Date.now() - lastPruneAt > PRUNE_INTERVAL_MS) {
+      lastPruneAt = Date.now();
+      try {
+        const messages = pruneOldMessages(MESSAGE_RETENTION_DAYS);
+        const taskLogs = pruneOldTaskRunLogs(TASK_LOG_RETENTION_DAYS);
+        if (messages > 0 || taskLogs > 0) {
+          logger.info({ messages, taskLogs }, 'Pruned old rows');
+        }
+      } catch (err) {
+        logger.error({ err }, 'Retention prune failed');
+      }
+    }
+
     try {
       const dueTasks = getDueTasks();
       if (dueTasks.length > 0) {

@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 
 import {
   _initTestDatabase,
@@ -9,6 +9,9 @@ import {
   getMessagesSince,
   getNewMessages,
   getTaskById,
+  logTaskRun,
+  pruneOldMessages,
+  pruneOldTaskRunLogs,
   setRegisteredGroup,
   storeChatMetadata,
   storeMessage,
@@ -480,5 +483,126 @@ describe('registered group isMain', () => {
     const group = groups['group@g.us'];
     expect(group).toBeDefined();
     expect(group.isMain).toBeUndefined();
+  });
+});
+
+// --- retention pruning ---
+
+describe('retention pruning', () => {
+  const NOW = new Date('2026-01-01T00:00:00.000Z');
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.setSystemTime(NOW);
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  function daysAgoIso(days: number): string {
+    return new Date(NOW.getTime() - days * 86_400_000).toISOString();
+  }
+
+  function storeAged(id: string, daysAgo: number): void {
+    store({
+      id,
+      chat_jid: 'group@g.us',
+      sender: '123@s.whatsapp.net',
+      sender_name: 'Alice',
+      content: `message ${id}`,
+      timestamp: daysAgoIso(daysAgo),
+    });
+  }
+
+  it('pruneOldMessages deletes rows older than the window and keeps recent ones', () => {
+    storeChatMetadata('group@g.us', daysAgoIso(100));
+    storeAged('old', 100);
+    storeAged('recent', 10);
+
+    const deleted = pruneOldMessages(90);
+
+    expect(deleted).toBe(1);
+    const remaining = getMessagesSince('group@g.us', daysAgoIso(365), 'Andy:');
+    expect(remaining.map((m) => m.id)).toEqual(['recent']);
+  });
+
+  it('pruneOldMessages deletes nothing when everything is recent', () => {
+    storeChatMetadata('group@g.us', daysAgoIso(10));
+    storeAged('a', 10);
+    storeAged('b', 1);
+
+    expect(pruneOldMessages(90)).toBe(0);
+    expect(
+      getMessagesSince('group@g.us', daysAgoIso(365), 'Andy:').length,
+    ).toBe(2);
+  });
+
+  it('keeps a message exactly at the cutoff (comparison is strictly older)', () => {
+    storeChatMetadata('group@g.us', daysAgoIso(90));
+    // With frozen time, this timestamp equals the computed cutoff exactly.
+    storeAged('boundary', 90);
+
+    expect(pruneOldMessages(90)).toBe(0);
+    expect(
+      getMessagesSince('group@g.us', daysAgoIso(365), 'Andy:').length,
+    ).toBe(1);
+  });
+
+  it('pruning messages leaves chats and scheduled_tasks untouched', () => {
+    storeChatMetadata('group@g.us', daysAgoIso(200));
+    storeAged('doomed', 200);
+    createTask({
+      id: 'task-keep',
+      group_folder: 'main',
+      chat_jid: 'group@g.us',
+      prompt: 'survive the prune',
+      schedule_type: 'once',
+      schedule_value: daysAgoIso(200),
+      context_mode: 'isolated',
+      next_run: daysAgoIso(200),
+      status: 'active',
+      created_at: daysAgoIso(200),
+    });
+
+    expect(pruneOldMessages(90)).toBe(1);
+
+    expect(getAllChats().some((c) => c.jid === 'group@g.us')).toBe(true);
+    expect(getTaskById('task-keep')).toBeDefined();
+  });
+
+  it('pruneOldTaskRunLogs deletes old run logs and keeps recent ones', () => {
+    createTask({
+      id: 'task-logs',
+      group_folder: 'main',
+      chat_jid: 'group@g.us',
+      prompt: 'log some runs',
+      schedule_type: 'cron',
+      schedule_value: '0 0 * * *',
+      context_mode: 'isolated',
+      next_run: daysAgoIso(0),
+      status: 'active',
+      created_at: daysAgoIso(120),
+    });
+    logTaskRun({
+      task_id: 'task-logs',
+      run_at: daysAgoIso(100),
+      duration_ms: 1000,
+      status: 'success',
+      result: 'old run',
+      error: null,
+    });
+    logTaskRun({
+      task_id: 'task-logs',
+      run_at: daysAgoIso(1),
+      duration_ms: 1000,
+      status: 'success',
+      result: 'recent run',
+      error: null,
+    });
+
+    expect(pruneOldTaskRunLogs(30)).toBe(1);
+    // Exactly one row survived: a prune-everything pass finds one row.
+    expect(pruneOldTaskRunLogs(0)).toBe(1);
   });
 });

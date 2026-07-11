@@ -90,6 +90,24 @@ export const MAX_CONCURRENT_CONTAINERS = Math.max(
   parseInt(process.env.MAX_CONCURRENT_CONTAINERS || '5', 10) || 5,
 );
 
+// Retention windows for the two unbounded history tables. A garbage env value
+// (NaN, zero, negative) falls back to the default rather than producing a
+// NaN cutoff whose WHERE clause matches unpredictably.
+function retentionDays(envValue: string | undefined, fallback: number): number {
+  const days = Number(envValue);
+  return Number.isFinite(days) && days > 0 ? days : fallback;
+}
+/** How long to keep message history. Also bounds how far back an agent can see. */
+export const MESSAGE_RETENTION_DAYS = retentionDays(
+  process.env.MESSAGE_RETENTION_DAYS,
+  90,
+);
+/** How long to keep scheduled-task run logs. */
+export const TASK_LOG_RETENTION_DAYS = retentionDays(
+  process.env.TASK_LOG_RETENTION_DAYS,
+  30,
+);
+
 function escapeRegex(str: string): string {
   return str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
