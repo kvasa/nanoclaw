@@ -22,8 +22,8 @@
     "cleanup": "node scripts/cleanup.js"
   },
   "dependencies": {
-    "@slack/bolt": "^4.6.0",
-    "@whiskeysockets/baileys": "^7.0.0-rc.9",
+    "@slack/bolt": "^4.7.3",
+    "@whiskeysockets/baileys": "^7.0.0-rc13",
     "better-sqlite3": "^11.8.1",
     "cron-parser": "^5.5.0",
     "googleapis": "^171.4.0",
