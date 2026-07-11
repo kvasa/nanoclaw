@@ -402,6 +402,41 @@ describe('WhatsAppChannel', () => {
       // The channel sets a 5s retry — just verify it doesn't crash
       await new Promise((r) => setTimeout(r, 100));
     });
+
+    it('resolves connect() when the first attempt closes before opening and a later reconnect opens', async () => {
+      vi.useFakeTimers();
+
+      const opts = createTestOpts();
+      const channel = new WhatsAppChannel(opts);
+
+      // Capture the socket used by the first connection attempt
+      const firstSocket = fakeSocket;
+
+      const connectPromise = channel.connect();
+      // Flush microtasks so connectInternal registers handlers on firstSocket
+      await vi.advanceTimersByTimeAsync(0);
+
+      // First attempt closes before ever opening (non-loggedOut reason)
+      firstSocket._ev.emit('connection.update', {
+        connection: 'close',
+        lastDisconnect: { error: { output: { statusCode: 428 } } },
+      });
+
+      // Swap in a fresh socket so the reconnect attempt gets a new instance
+      fakeSocket = createFakeSocket();
+      const secondSocket = fakeSocket;
+
+      // Advance past the 5s backoff so the reconnect attempt fires
+      await vi.advanceTimersByTimeAsync(5000);
+
+      // Second attempt opens successfully
+      secondSocket._ev.emit('connection.update', { connection: 'open' });
+
+      await expect(connectPromise).resolves.toBeUndefined();
+      expect(channel.isConnected()).toBe(true);
+
+      vi.useRealTimers();
+    });
   });
 
   // --- Message handling ---
