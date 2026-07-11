@@ -16,6 +16,7 @@
     "setup": "tsx setup/index.ts",
     "test": "vitest run",
     "test:watch": "vitest",
+    "e2e": "node scripts/e2e-api.mjs",
     "backup": "node backup/backup.js",
     "restore": "node backup/restore.js",
     "cleanup": "node scripts/cleanup.js"
