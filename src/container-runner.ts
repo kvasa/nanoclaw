@@ -482,8 +482,26 @@ export async function runContainerAgent(
     let stdoutTruncated = false;
     let stderrTruncated = false;
 
-    container.stdin.write(JSON.stringify(input));
-    container.stdin.end();
+    // A container that dies before consuming stdin emits EPIPE on the stream;
+    // without a listener that becomes an uncaughtException and kills the host.
+    // The container's own 'close'/'error' handlers already produce the error
+    // output, so logging is all that's needed here.
+    container.stdin.on('error', (err) => {
+      logger.warn(
+        { group: group.name, containerName, err },
+        'Container stdin write failed',
+      );
+    });
+
+    try {
+      container.stdin.write(JSON.stringify(input));
+      container.stdin.end();
+    } catch (err) {
+      logger.warn(
+        { group: group.name, containerName, err },
+        'Container stdin write threw',
+      );
+    }
 
     // Streaming output: parse OUTPUT_START/END marker pairs as they arrive
     let parseBuffer = '';

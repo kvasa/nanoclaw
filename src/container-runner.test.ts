@@ -297,6 +297,65 @@ describe('output callback failure never leaves the run pending', () => {
   // covered by 'normal exit after output resolves as success' above.
 });
 
+describe('a stdin write failure does not crash the host', () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    fakeProc = createFakeProcess();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  // Before the fix, an 'error' event on stdin with no listener would throw,
+  // become an uncaughtException, and (per src/logger.ts) exit the process.
+  // Vitest fails a test on an unhandled exception, so simply not throwing
+  // here — while still resolving via the normal close path — is the
+  // assertion that the fix is in place.
+  it('an EPIPE-style stdin error is caught and the run still resolves via close', async () => {
+    const resultPromise = runContainerAgent(
+      testGroup,
+      testInput,
+      () => {},
+      vi.fn(async () => {}),
+    );
+
+    // Simulate the container dying before it drains stdin: the pipe breaks
+    // and the Writable emits 'error' (e.g. EPIPE) asynchronously.
+    fakeProc.stdin.emit('error', new Error('EPIPE: broken pipe'));
+    await vi.advanceTimersByTimeAsync(10);
+
+    // The container's own close handler is what actually resolves the run.
+    fakeProc.emit('close', 1);
+    await vi.advanceTimersByTimeAsync(10);
+
+    const result = await resultPromise;
+    expect(result.status).toBe('error');
+  });
+
+  it('a synchronous throw from stdin.write is caught and the run still resolves', async () => {
+    const writeSpy = vi
+      .spyOn(fakeProc.stdin, 'write')
+      .mockImplementation(() => {
+        throw new Error('write after end');
+      });
+
+    const resultPromise = runContainerAgent(
+      testGroup,
+      testInput,
+      () => {},
+      vi.fn(async () => {}),
+    );
+
+    fakeProc.emit('close', 1);
+    await vi.advanceTimersByTimeAsync(10);
+
+    const result = await resultPromise;
+    expect(result.status).toBe('error');
+    writeSpy.mockRestore();
+  });
+});
+
 describe('container args credential hygiene', () => {
   const CRED_KEYS = ['APPLE_ID', 'APPLE_APP_PASSWORD', 'CALDAV_BASE_URL'];
   const savedEnv: Record<string, string | undefined> = {};
