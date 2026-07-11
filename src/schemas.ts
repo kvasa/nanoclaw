@@ -77,17 +77,22 @@ export const IpcAnnounceStartSchema = z.object({
     .regex(/^[a-zA-Z0-9_-]+$/),
 });
 
+// A Slack message ts is Unix seconds + microseconds, e.g. "1234567890.123456".
+// Defense in depth: the host-side ownership check is the real gate, but a
+// malformed or injected value dies in validation before any handler sees it.
+const SlackTs = z.string().regex(/^\d{1,20}\.\d{1,10}$/);
+
 export const IpcEditMessageSchema = z.object({
   type: z.literal('edit_message'),
   chatJid: z.string(),
-  messageTs: z.string(),
+  messageTs: SlackTs,
   text: z.string(),
 });
 
 export const IpcDeleteMessageSchema = z.object({
   type: z.literal('delete_message'),
   chatJid: z.string(),
-  messageTs: z.string(),
+  messageTs: SlackTs,
 });
 
 export const IpcFileMessageSchema = z.discriminatedUnion('type', [

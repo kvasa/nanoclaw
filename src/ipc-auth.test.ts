@@ -514,6 +514,27 @@ describe('edit/delete message IPC schemas', () => {
     expect(parsed.success).toBe(false);
   });
 
+  it('rejects a malformed messageTs on edit_message', () => {
+    for (const messageTs of ['not-a-ts', '../../etc', '1700000000', '']) {
+      const parsed = IpcFileMessageSchema.safeParse({
+        type: 'edit_message',
+        chatJid: 'slack:C0123456789',
+        messageTs,
+        text: 'hi',
+      });
+      expect(parsed.success).toBe(false);
+    }
+  });
+
+  it('rejects a malformed messageTs on delete_message', () => {
+    const parsed = IpcFileMessageSchema.safeParse({
+      type: 'delete_message',
+      chatJid: 'slack:C0123456789',
+      messageTs: 'rm -rf /',
+    });
+    expect(parsed.success).toBe(false);
+  });
+
   it('accepts a message with returnTs + requestId', () => {
     const parsed = IpcFileMessageSchema.safeParse({
       type: 'message',

@@ -93,6 +93,48 @@ export interface IpcDeps {
   ) => void;
 }
 
+/**
+ * Slack timestamps the host has posted on behalf of a group, so edit_message /
+ * delete_message can be authorized against *ownership*, not just channel
+ * access. Without this, an agent could rewrite or delete any message the
+ * shared bot ever posted in a channel it can see — including another
+ * context's answers. The host authorizes by what it issued, not by what the
+ * agent claims — the same principle as deriving group identity from the IPC
+ * directory rather than from a field in the JSON.
+ *
+ * Bounded: only the most recent MAX_TRACKED_MESSAGE_TS entries are kept. An
+ * agent editing a status line it posted minutes ago is the real use case;
+ * editing a message from thousands of messages ago is not. In-memory by
+ * design: after a restart an edit of a pre-restart ts is refused (fail
+ * closed) and the agent posts a fresh message instead.
+ */
+const MAX_TRACKED_MESSAGE_TS = 1000;
+const issuedMessageTs = new Map<string, string>(); // `${chatJid} ${ts}` -> groupFolder
+
+/** @internal - exported for tests only. */
+export function _recordIssuedTs(
+  groupFolder: string,
+  chatJid: string,
+  ts: string,
+): void {
+  const key = `${chatJid} ${ts}`;
+  issuedMessageTs.set(key, groupFolder);
+  if (issuedMessageTs.size > MAX_TRACKED_MESSAGE_TS) {
+    // Map preserves insertion order — drop the oldest.
+    const oldest = issuedMessageTs.keys().next().value;
+    if (oldest !== undefined) issuedMessageTs.delete(oldest);
+  }
+}
+
+/** @internal - exported for tests only. */
+export function _ownsMessageTs(
+  groupFolder: string,
+  chatJid: string,
+  ts: string,
+): boolean {
+  return issuedMessageTs.get(`${chatJid} ${ts}`) === groupFolder;
+}
+
 let ipcWatcherRunning = false;
 
 export function startIpcWatcher(deps: IpcDeps): void {
@@ -333,6 +375,11 @@ export function startIpcWatcher(deps: IpcDeps): void {
                           data.threadTs,
                         );
                       }
+                      // Remember which group this ts was issued to so
+                      // edit_message / delete_message can check ownership.
+                      if (ts) {
+                        _recordIssuedTs(sourceGroup, data.chatJid, ts);
+                      }
                       const responseDir = path.join(
                         ipcBaseDir,
                         sourceGroup,
@@ -370,21 +417,44 @@ export function startIpcWatcher(deps: IpcDeps): void {
                       );
                     }
                   } else if (data.type === 'edit_message') {
-                    await deps.editMessage?.(
-                      data.chatJid,
-                      data.messageTs,
-                      data.text,
-                    );
-                    logger.info(
-                      { chatJid: data.chatJid, sourceGroup },
-                      'IPC message edited',
-                    );
+                    // Ownership gate on top of the channel check: a group may
+                    // only edit a ts the host issued to it. Main is the admin
+                    // channel and stays trusted across groups — explicitly.
+                    if (
+                      !isMain &&
+                      !_ownsMessageTs(sourceGroup, data.chatJid, data.messageTs)
+                    ) {
+                      logger.warn(
+                        { chatJid: data.chatJid, sourceGroup },
+                        'Unauthorized edit_message: group did not post this message',
+                      );
+                    } else {
+                      await deps.editMessage?.(
+                        data.chatJid,
+                        data.messageTs,
+                        data.text,
+                      );
+                      logger.info(
+                        { chatJid: data.chatJid, sourceGroup },
+                        'IPC message edited',
+                      );
+                    }
                   } else if (data.type === 'delete_message') {
-                    await deps.deleteMessage?.(data.chatJid, data.messageTs);
-                    logger.info(
-                      { chatJid: data.chatJid, sourceGroup },
-                      'IPC message deleted',
-                    );
+                    if (
+                      !isMain &&
+                      !_ownsMessageTs(sourceGroup, data.chatJid, data.messageTs)
+                    ) {
+                      logger.warn(
+                        { chatJid: data.chatJid, sourceGroup },
+                        'Unauthorized delete_message: group did not post this message',
+                      );
+                    } else {
+                      await deps.deleteMessage?.(data.chatJid, data.messageTs);
+                      logger.info(
+                        { chatJid: data.chatJid, sourceGroup },
+                        'IPC message deleted',
+                      );
+                    }
                   } else if (data.type === 'send_file') {
                     await deps.sendFile(
                       data.chatJid,
@@ -543,6 +613,11 @@ export async function processAnnounceStartIpc(
       : undefined;
   } catch (err) {
     logger.warn({ sourceGroup, chatJid, err }, 'postAnnouncement failed');
+  }
+  // The announcement ts is returned to the agent; record ownership so the
+  // group can later edit/delete its own announcement header.
+  if (threadTs) {
+    _recordIssuedTs(sourceGroup, chatJid, threadTs);
   }
   if (!deps.postAnnouncement) {
     // Fallback: post via sendMessage; no thread routing available.
