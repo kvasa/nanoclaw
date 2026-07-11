@@ -4,7 +4,13 @@ import type { AddressInfo } from 'net';
 
 const mockEnv: Record<string, string> = {};
 vi.mock('./env.js', () => ({
-  readEnvFile: vi.fn(() => ({ ...mockEnv })),
+  // Honor the requested-keys contract of the real readEnvFile — the
+  // /mcp-creds filtering tests depend on it.
+  readEnvFile: vi.fn((keys: string[]) =>
+    Object.fromEntries(
+      keys.filter((k) => k in mockEnv).map((k) => [k, mockEnv[k]]),
+    ),
+  ),
 }));
 
 vi.mock('./logger.js', () => ({
@@ -12,6 +18,7 @@ vi.mock('./logger.js', () => ({
 }));
 
 import { startCredentialProxy } from './credential-proxy.js';
+import { issueCredsToken, _resetCredsTokens } from './creds-token.js';
 
 function makeRequest(
   port: number,
@@ -68,6 +75,7 @@ describe('credential-proxy', () => {
     await new Promise<void>((r) => proxyServer?.close(() => r()));
     await new Promise<void>((r) => upstreamServer?.close(() => r()));
     for (const key of Object.keys(mockEnv)) delete mockEnv[key];
+    _resetCredsTokens();
   });
 
   async function startProxy(env: Record<string, string>): Promise<number> {
@@ -170,30 +178,38 @@ describe('credential-proxy', () => {
 
   // --- /mcp-creds endpoint ---
 
-  it('/mcp-creds includes GEMINI_API_KEY when present', async () => {
-    proxyPort = await startProxy({
-      ANTHROPIC_API_KEY: 'sk-ant',
-      GEMINI_API_KEY: 'AIza-test-key',
-      RHL_EMAIL: 'a@b.cz',
-    });
+  // Every third-party credential the proxy can serve; the filtering tests
+  // populate all of them so a leak of any unentitled key is caught.
+  const ALL_MCP_ENV = {
+    RHL_EMAIL: 'rhl-email-value',
+    RHL_PASS: 'rhl-pass-value',
+    APPLE_ID: 'apple-id-value',
+    APPLE_APP_PASSWORD: 'apple-pass-value',
+    CALDAV_BASE_URL: 'caldav-url-value',
+    GARMIN_EMAIL: 'garmin-email-value',
+    GARMIN_PASSWORD: 'garmin-pass-value',
+    GEMINI_API_KEY: 'gemini-key-value',
+  };
 
-    const { NANOCLAW_CREDS_TOKEN } = await import('./creds-token.js');
+  async function fetchCreds(
+    token: string,
+  ): Promise<{ statusCode: number; keys: string[] }> {
     const res = await makeRequest(proxyPort, {
       method: 'GET',
       path: '/mcp-creds',
-      headers: { authorization: `Bearer ${NANOCLAW_CREDS_TOKEN}` },
+      headers: { authorization: `Bearer ${token}` },
     });
-
-    expect(res.statusCode).toBe(200);
-    const body = JSON.parse(res.body);
-    expect(body.GEMINI_API_KEY).toBe('AIza-test-key');
-    expect(body.RHL_EMAIL).toBe('a@b.cz');
-  });
+    return {
+      statusCode: res.statusCode,
+      keys:
+        res.statusCode === 200 ? Object.keys(JSON.parse(res.body)).sort() : [],
+    };
+  }
 
   it('/mcp-creds rejects requests without the bearer token', async () => {
     proxyPort = await startProxy({
       ANTHROPIC_API_KEY: 'sk-ant',
-      GEMINI_API_KEY: 'AIza-test-key',
+      ...ALL_MCP_ENV,
     });
 
     const res = await makeRequest(proxyPort, {
@@ -202,7 +218,132 @@ describe('credential-proxy', () => {
     });
 
     expect(res.statusCode).toBe(401);
-    expect(res.body).not.toContain('AIza');
+    expect(res.body).toBe('Unauthorized');
+  });
+
+  it('/mcp-creds rejects a token that was never issued', async () => {
+    proxyPort = await startProxy({
+      ANTHROPIC_API_KEY: 'sk-ant',
+      ...ALL_MCP_ENV,
+    });
+
+    const res = await makeRequest(proxyPort, {
+      method: 'GET',
+      path: '/mcp-creds',
+      headers: { authorization: `Bearer ${'0'.repeat(64)}` },
+    });
+
+    expect(res.statusCode).toBe(401);
+    expect(res.body).toBe('Unauthorized');
+  });
+
+  it('group with no MCP servers gets only the universal keys', async () => {
+    proxyPort = await startProxy({
+      ANTHROPIC_API_KEY: 'sk-ant',
+      ...ALL_MCP_ENV,
+    });
+    const token = issueCredsToken({
+      groupFolder: 'skolka',
+      enabledMcpServers: [],
+    });
+
+    const { statusCode, keys } = await fetchCreds(token);
+
+    expect(statusCode).toBe(200);
+    expect(keys).toEqual(['GEMINI_API_KEY']);
+  });
+
+  it('group with rohlik gets Rohlik keys and not Garmin/Apple ones', async () => {
+    proxyPort = await startProxy({
+      ANTHROPIC_API_KEY: 'sk-ant',
+      ...ALL_MCP_ENV,
+    });
+    const token = issueCredsToken({
+      groupFolder: 'rohlik',
+      enabledMcpServers: ['rohlik'],
+    });
+
+    const { keys } = await fetchCreds(token);
+
+    expect(keys).toEqual(['GEMINI_API_KEY', 'RHL_EMAIL', 'RHL_PASS']);
+  });
+
+  it('group with rohlik and garmin gets the union', async () => {
+    proxyPort = await startProxy({
+      ANTHROPIC_API_KEY: 'sk-ant',
+      ...ALL_MCP_ENV,
+    });
+    const token = issueCredsToken({
+      groupFolder: 'multi',
+      enabledMcpServers: ['rohlik', 'garmin'],
+    });
+
+    const { keys } = await fetchCreds(token);
+
+    expect(keys).toEqual([
+      'GARMIN_EMAIL',
+      'GARMIN_PASSWORD',
+      'GEMINI_API_KEY',
+      'RHL_EMAIL',
+      'RHL_PASS',
+    ]);
+  });
+
+  it('an unknown server name in the grant contributes no keys', async () => {
+    proxyPort = await startProxy({
+      ANTHROPIC_API_KEY: 'sk-ant',
+      ...ALL_MCP_ENV,
+    });
+    const token = issueCredsToken({
+      groupFolder: 'main',
+      enabledMcpServers: ['gmail', 'does-not-exist'],
+    });
+
+    const { statusCode, keys } = await fetchCreds(token);
+
+    expect(statusCode).toBe(200);
+    expect(keys).toEqual(['GEMINI_API_KEY']);
+  });
+
+  it('two tokens are isolated: an empty grant gets nothing extra', async () => {
+    proxyPort = await startProxy({
+      ANTHROPIC_API_KEY: 'sk-ant',
+      ...ALL_MCP_ENV,
+    });
+    const rohlikToken = issueCredsToken({
+      groupFolder: 'rohlik',
+      enabledMcpServers: ['rohlik'],
+    });
+    const emptyToken = issueCredsToken({
+      groupFolder: 'skolka',
+      enabledMcpServers: [],
+    });
+
+    const rohlik = await fetchCreds(rohlikToken);
+    const empty = await fetchCreds(emptyToken);
+
+    expect(rohlik.keys).toEqual(['GEMINI_API_KEY', 'RHL_EMAIL', 'RHL_PASS']);
+    expect(empty.keys).toEqual(['GEMINI_API_KEY']);
+  });
+
+  it('a calendar grant gets the Apple/CalDAV keys only', async () => {
+    proxyPort = await startProxy({
+      ANTHROPIC_API_KEY: 'sk-ant',
+      ...ALL_MCP_ENV,
+    });
+    const token = issueCredsToken({
+      groupFolder: 'cal',
+      enabledMcpServers: ['calendar'],
+    });
+
+    const { keys } = await fetchCreds(token);
+
+    expect(keys).toEqual([
+      'APPLE_APP_PASSWORD',
+      'APPLE_ID',
+      'CALDAV_BASE_URL',
+      'GEMINI_API_KEY',
+    ]);
   });
 
   it('returns 502 when upstream is unreachable', async () => {

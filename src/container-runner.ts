@@ -8,7 +8,7 @@ import os from 'os';
 import path from 'path';
 
 import { readEnvFile } from './env.js';
-import { NANOCLAW_CREDS_TOKEN } from './creds-token.js';
+import { issueCredsToken, revokeCredsToken } from './creds-token.js';
 import {
   CONTAINER_CPUS,
   CONTAINER_IMAGE,
@@ -292,6 +292,7 @@ function buildVolumeMounts(
 function buildContainerArgs(
   mounts: VolumeMount[],
   containerName: string,
+  credsToken: string,
   enabledMcpServers?: string[],
 ): string[] {
   const args: string[] = ['run', '-i', '--rm', '--name', containerName];
@@ -314,8 +315,10 @@ function buildContainerArgs(
     '-e',
     `ANTHROPIC_BASE_URL=http://${CONTAINER_HOST_GATEWAY}:${CREDENTIAL_PROXY_PORT}`,
   );
-  // Token for authenticating /mcp-creds requests (fetched by entrypoint.sh at startup)
-  args.push('-e', `NANOCLAW_CREDS_TOKEN=${NANOCLAW_CREDS_TOKEN}`);
+  // Token for authenticating /mcp-creds requests (fetched by entrypoint.sh at
+  // startup). Bound to this group and the MCP servers it enabled, so the
+  // endpoint returns only the credentials this container is entitled to.
+  args.push('-e', `NANOCLAW_CREDS_TOKEN=${credsToken}`);
 
   // Mirror the host's auth method with a placeholder value.
   // API key mode: SDK sends x-api-key, proxy replaces with real key.
@@ -408,9 +411,16 @@ export async function runContainerAgent(
   const mounts = buildVolumeMounts(group, input.isMain);
   const safeName = group.folder.replace(/[^a-zA-Z0-9-]/g, '-');
   const containerName = `nanoclaw-${safeName}-${Date.now()}`;
+  // Issue a credential token bound to this group's entitlements; revoked
+  // when the container exits so stale tokens don't accumulate.
+  const credsToken = issueCredsToken({
+    groupFolder: group.folder,
+    enabledMcpServers: input.enabledMcpServers ?? [],
+  });
   const containerArgs = buildContainerArgs(
     mounts,
     containerName,
+    credsToken,
     input.enabledMcpServers,
   );
 
@@ -625,6 +635,7 @@ export async function runContainerAgent(
 
     container.on('close', (code) => {
       clearTimeout(timeout);
+      revokeCredsToken(credsToken);
       const duration = Date.now() - startTime;
 
       if (timedOut) {
@@ -808,6 +819,7 @@ export async function runContainerAgent(
 
     container.on('error', (err) => {
       clearTimeout(timeout);
+      revokeCredsToken(credsToken);
       logger.error(
         { group: group.name, containerName, error: err },
         'Container spawn error',

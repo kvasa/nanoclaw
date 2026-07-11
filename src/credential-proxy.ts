@@ -16,7 +16,32 @@ import { request as httpRequest, RequestOptions } from 'http';
 
 import { readEnvFile } from './env.js';
 import { logger } from './logger.js';
-import { NANOCLAW_CREDS_TOKEN } from './creds-token.js';
+import { resolveCredsToken } from './creds-token.js';
+
+/**
+ * Which env keys each MCP server is entitled to. A container only ever
+ * receives the union of the entries for the servers its group enabled, so a
+ * prompt-injected agent in one group cannot read another integration's
+ * credentials out of its own environment.
+ *
+ * This mapping is a security boundary: adding a new MCP server means adding
+ * its entry here — otherwise its credentials will not reach any container,
+ * and the failure will look like a broken integration rather than a policy
+ * decision.
+ */
+const MCP_SERVER_CREDENTIALS: Record<string, string[]> = {
+  rohlik: ['RHL_EMAIL', 'RHL_PASS'],
+  calendar: ['APPLE_ID', 'APPLE_APP_PASSWORD', 'CALDAV_BASE_URL'],
+  garmin: ['GARMIN_EMAIL', 'GARMIN_PASSWORD'],
+};
+
+/**
+ * Credentials every container gets regardless of enabled servers.
+ * GEMINI_API_KEY backs the generate_image tool, which is part of the agent
+ * runner itself and available to all groups. Routed through the proxy so it
+ * never appears in `docker inspect` output.
+ */
+const UNIVERSAL_CREDENTIALS = ['GEMINI_API_KEY'];
 
 export type AuthMode = 'api-key' | 'oauth';
 
@@ -59,23 +84,28 @@ export function startCredentialProxy(
       // Token auth prevents rogue processes on the docker bridge from reading credentials.
       if (req.method === 'GET' && req.url === '/mcp-creds') {
         const auth = req.headers['authorization'];
-        if (!auth || auth !== `Bearer ${NANOCLAW_CREDS_TOKEN}`) {
+        const token = auth?.startsWith('Bearer ')
+          ? auth.slice('Bearer '.length)
+          : undefined;
+        const grant = token ? resolveCredsToken(token) : undefined;
+        if (!grant) {
           res.writeHead(401, { 'Content-Type': 'text/plain' });
           res.end('Unauthorized');
           return;
         }
-        const mcpCreds = readEnvFile([
-          'RHL_EMAIL',
-          'RHL_PASS',
-          'APPLE_ID',
-          'APPLE_APP_PASSWORD',
-          'CALDAV_BASE_URL',
-          'GARMIN_EMAIL',
-          'GARMIN_PASSWORD',
-          // Gemini API key (nano-banana image generation). Routed through the
-          // proxy so it never appears in `docker inspect` output.
-          'GEMINI_API_KEY',
-        ]);
+        // Union of the entitlements for this group's enabled servers.
+        // Unknown server names contribute nothing.
+        const allowedKeys = [
+          ...UNIVERSAL_CREDENTIALS,
+          ...grant.enabledMcpServers.flatMap(
+            (server) => MCP_SERVER_CREDENTIALS[server] ?? [],
+          ),
+        ];
+        const mcpCreds = readEnvFile(allowedKeys);
+        logger.info(
+          { group: grant.groupFolder, servers: grant.enabledMcpServers },
+          'Served MCP credentials',
+        );
         const body = Buffer.from(JSON.stringify(mcpCreds));
         res.writeHead(200, {
           'Content-Type': 'application/json',
