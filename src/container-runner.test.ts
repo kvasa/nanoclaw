@@ -89,6 +89,8 @@ vi.mock('child_process', async () => {
   };
 });
 
+import { spawn } from 'child_process';
+
 import { runContainerAgent, ContainerOutput } from './container-runner.js';
 import type { RegisteredGroup } from './types.js';
 
@@ -209,5 +211,58 @@ describe('container-runner timeout behavior', () => {
     const result = await resultPromise;
     expect(result.status).toBe('success');
     expect(result.newSessionId).toBe('session-456');
+  });
+});
+
+describe('container args credential hygiene', () => {
+  const CRED_KEYS = ['APPLE_ID', 'APPLE_APP_PASSWORD', 'CALDAV_BASE_URL'];
+  const savedEnv: Record<string, string | undefined> = {};
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+    fakeProc = createFakeProcess();
+    for (const key of CRED_KEYS) {
+      savedEnv[key] = process.env[key];
+    }
+    process.env.APPLE_ID = 'fake-apple-id@example.com';
+    process.env.APPLE_APP_PASSWORD = 'fake-app-password';
+    process.env.CALDAV_BASE_URL = 'https://caldav.example.invalid/';
+  });
+
+  afterEach(() => {
+    for (const key of CRED_KEYS) {
+      if (savedEnv[key] === undefined) delete process.env[key];
+      else process.env[key] = savedEnv[key];
+    }
+    vi.useRealTimers();
+  });
+
+  it('never passes Apple credentials as -e flags (they go through the proxy)', async () => {
+    const resultPromise = runContainerAgent(
+      testGroup,
+      { ...testInput, enabledMcpServers: ['calendar'] },
+      () => {},
+      vi.fn(async () => {}),
+    );
+
+    emitOutputMarker(fakeProc, { status: 'success', result: 'ok' });
+    await vi.advanceTimersByTimeAsync(10);
+    fakeProc.emit('close', 0);
+    await vi.advanceTimersByTimeAsync(10);
+    await resultPromise;
+
+    // spawn's mock accumulates calls across tests in this file — take the
+    // last docker run, which is the one this test triggered.
+    const dockerRun = vi
+      .mocked(spawn)
+      .mock.calls.filter(
+        (call) => call[0] === 'docker' && (call[1] as string[])[0] === 'run',
+      )
+      .at(-1);
+    expect(dockerRun).toBeDefined();
+    const args = dockerRun![1] as string[];
+    // Guard against a vacuous pass: env flags are being produced at all.
+    expect(args).toContain('-e');
+    expect(args.filter((a) => /APPLE_|CALDAV_/.test(a))).toEqual([]);
   });
 });
