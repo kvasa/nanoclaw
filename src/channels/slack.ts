@@ -787,15 +787,35 @@ export class SlackChannel implements Channel {
       );
       while (this.outgoingQueue.length > 0) {
         const item = this.outgoingQueue.shift()!;
-        const channelId = item.jid.replace(/^slack:/, '');
-        await this.app.client.chat.postMessage({
-          channel: channelId,
-          text: item.text,
-        });
-        logger.info(
-          { jid: item.jid, length: item.text.length },
-          'Queued Slack message sent',
-        );
+        try {
+          const channelId = item.jid.replace(/^slack:/, '');
+          await this.app.client.chat.postMessage({
+            channel: channelId,
+            text: item.text,
+          });
+          logger.info(
+            { jid: item.jid, length: item.text.length },
+            'Queued Slack message sent',
+          );
+        } catch (err) {
+          // Put it back at the front so it's retried first on the next
+          // flush, instead of being silently lost. Stop draining: if this
+          // send failed, the connection is likely still bad and the rest
+          // would fail too.
+          if (this.outgoingQueue.length < MAX_OUTGOING_QUEUE_SIZE) {
+            this.outgoingQueue.unshift(item);
+          } else {
+            logger.warn(
+              { jid: item.jid },
+              'Slack outgoing queue full, dropping message that failed to flush',
+            );
+          }
+          logger.warn(
+            { jid: item.jid, err, queueSize: this.outgoingQueue.length },
+            'Failed to flush queued Slack message, re-queued',
+          );
+          break;
+        }
       }
     } finally {
       this.flushing = false;

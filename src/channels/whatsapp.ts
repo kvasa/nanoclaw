@@ -420,12 +420,32 @@ export class WhatsAppChannel implements Channel {
       );
       while (this.outgoingQueue.length > 0) {
         const item = this.outgoingQueue.shift()!;
-        // Send directly — queued items are already prefixed by sendMessage
-        await this.sock.sendMessage(item.jid, { text: item.text });
-        logger.info(
-          { jid: item.jid, length: item.text.length },
-          'Queued message sent',
-        );
+        try {
+          // Send directly — queued items are already prefixed by sendMessage
+          await this.sock.sendMessage(item.jid, { text: item.text });
+          logger.info(
+            { jid: item.jid, length: item.text.length },
+            'Queued message sent',
+          );
+        } catch (err) {
+          // Put it back at the front so it's retried first on the next
+          // flush, instead of being silently lost. Stop draining: if this
+          // send failed, the connection is likely still bad and the rest
+          // would fail too.
+          if (this.outgoingQueue.length < MAX_OUTGOING_QUEUE_SIZE) {
+            this.outgoingQueue.unshift(item);
+          } else {
+            logger.warn(
+              { jid: item.jid },
+              'WA outgoing queue full, dropping message that failed to flush',
+            );
+          }
+          logger.warn(
+            { jid: item.jid, err, queueSize: this.outgoingQueue.length },
+            'Failed to flush queued message, re-queued',
+          );
+          break;
+        }
       }
     } finally {
       this.flushing = false;

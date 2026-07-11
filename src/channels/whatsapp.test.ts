@@ -239,6 +239,79 @@ describe('WhatsAppChannel', () => {
       });
     });
 
+    it('re-queues the in-flight message at the front when a flush send fails', async () => {
+      const opts = createTestOpts();
+      const channel = new WhatsAppChannel(opts);
+      await connectChannel(channel);
+
+      (channel as any).connected = false;
+      await channel.sendMessage('test@g.us', 'first');
+      await channel.sendMessage('test@g.us', 'second');
+      (channel as any).connected = true;
+
+      fakeSocket.sendMessage.mockRejectedValueOnce(new Error('not ready'));
+      await (channel as any).flushOutgoingQueue();
+
+      const queue = (channel as any).outgoingQueue;
+      expect(queue.length).toBe(2);
+      expect(queue[0].text).toContain('first');
+      expect(queue[1].text).toContain('second');
+    });
+
+    it('stops draining after a flush failure', async () => {
+      const opts = createTestOpts();
+      const channel = new WhatsAppChannel(opts);
+      await connectChannel(channel);
+
+      (channel as any).connected = false;
+      await channel.sendMessage('test@g.us', 'first');
+      await channel.sendMessage('test@g.us', 'second');
+      (channel as any).connected = true;
+
+      fakeSocket.sendMessage.mockRejectedValueOnce(new Error('not ready'));
+      await (channel as any).flushOutgoingQueue();
+
+      expect(fakeSocket.sendMessage).toHaveBeenCalledTimes(1);
+    });
+
+    it('a later successful flush drains everything in order after a failure', async () => {
+      const opts = createTestOpts();
+      const channel = new WhatsAppChannel(opts);
+      await connectChannel(channel);
+
+      (channel as any).connected = false;
+      await channel.sendMessage('test@g.us', 'first');
+      await channel.sendMessage('test@g.us', 'second');
+      (channel as any).connected = true;
+
+      fakeSocket.sendMessage.mockRejectedValueOnce(new Error('not ready'));
+      await (channel as any).flushOutgoingQueue();
+      await (channel as any).flushOutgoingQueue();
+
+      expect((channel as any).outgoingQueue.length).toBe(0);
+      const sent = fakeSocket.sendMessage.mock.calls.slice(1);
+      expect(sent[0][1].text).toContain('first');
+      expect(sent[1][1].text).toContain('second');
+    });
+
+    it('a flush with no errors drains the queue in order', async () => {
+      const opts = createTestOpts();
+      const channel = new WhatsAppChannel(opts);
+      await connectChannel(channel);
+
+      (channel as any).connected = false;
+      await channel.sendMessage('test@g.us', 'first');
+      await channel.sendMessage('test@g.us', 'second');
+      (channel as any).connected = true;
+
+      await (channel as any).flushOutgoingQueue();
+
+      expect((channel as any).outgoingQueue.length).toBe(0);
+      expect(fakeSocket.sendMessage).toHaveBeenCalledTimes(2);
+      expect(fakeSocket.sendMessage.mock.calls[0][1].text).toContain('first');
+      expect(fakeSocket.sendMessage.mock.calls[1][1].text).toContain('second');
+    });
+
     it('disconnects cleanly', async () => {
       const opts = createTestOpts();
       const channel = new WhatsAppChannel(opts);

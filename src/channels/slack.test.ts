@@ -781,6 +781,80 @@ describe('SlackChannel', () => {
         text: 'Second queued',
       });
     });
+
+    it('re-queues the in-flight message at the front when a flush send fails', async () => {
+      const opts = createTestOpts();
+      const channel = new SlackChannel(opts);
+
+      await channel.sendMessage('slack:C0123456789', 'first');
+      await channel.sendMessage('slack:C0123456789', 'second');
+
+      currentApp().client.chat.postMessage.mockRejectedValueOnce(
+        new Error('not ready'),
+      );
+      await (channel as any).flushOutgoingQueue();
+
+      const queue = (channel as any).outgoingQueue;
+      expect(queue.map((i: { text: string }) => i.text)).toEqual([
+        'first',
+        'second',
+      ]);
+    });
+
+    it('stops draining after a flush failure', async () => {
+      const opts = createTestOpts();
+      const channel = new SlackChannel(opts);
+
+      await channel.sendMessage('slack:C0123456789', 'first');
+      await channel.sendMessage('slack:C0123456789', 'second');
+
+      currentApp().client.chat.postMessage.mockRejectedValueOnce(
+        new Error('not ready'),
+      );
+      await (channel as any).flushOutgoingQueue();
+
+      expect(currentApp().client.chat.postMessage).toHaveBeenCalledTimes(1);
+    });
+
+    it('a later successful flush drains everything in order after a failure', async () => {
+      const opts = createTestOpts();
+      const channel = new SlackChannel(opts);
+
+      await channel.sendMessage('slack:C0123456789', 'first');
+      await channel.sendMessage('slack:C0123456789', 'second');
+
+      currentApp().client.chat.postMessage.mockRejectedValueOnce(
+        new Error('not ready'),
+      );
+      await (channel as any).flushOutgoingQueue();
+      await (channel as any).flushOutgoingQueue();
+
+      expect((channel as any).outgoingQueue.length).toBe(0);
+      const sent = currentApp().client.chat.postMessage.mock.calls.slice(1);
+      expect(sent[0][0]).toEqual({ channel: 'C0123456789', text: 'first' });
+      expect(sent[1][0]).toEqual({ channel: 'C0123456789', text: 'second' });
+    });
+
+    it('a flush with no errors drains the queue in order', async () => {
+      const opts = createTestOpts();
+      const channel = new SlackChannel(opts);
+
+      await channel.sendMessage('slack:C0123456789', 'first');
+      await channel.sendMessage('slack:C0123456789', 'second');
+
+      await (channel as any).flushOutgoingQueue();
+
+      expect((channel as any).outgoingQueue.length).toBe(0);
+      expect(currentApp().client.chat.postMessage).toHaveBeenCalledTimes(2);
+      expect(currentApp().client.chat.postMessage).toHaveBeenNthCalledWith(1, {
+        channel: 'C0123456789',
+        text: 'first',
+      });
+      expect(currentApp().client.chat.postMessage).toHaveBeenNthCalledWith(2, {
+        channel: 'C0123456789',
+        text: 'second',
+      });
+    });
   });
 
   // --- sendFile ---
