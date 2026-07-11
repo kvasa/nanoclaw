@@ -26,6 +26,7 @@ import { resolveGroupFolderPath, resolveGroupIpcPath } from './group-folder.js';
 import { logger } from './logger.js';
 import {
   CONTAINER_HOST_GATEWAY,
+  CONTAINER_NETWORK,
   CONTAINER_RUNTIME_BIN,
   hostGatewayArgs,
   readonlyMountArgs,
@@ -307,6 +308,13 @@ function buildContainerArgs(
       pidsLimit: CONTAINER_PIDS_LIMIT,
     }),
   );
+
+  // Put the container on the dedicated NanoClaw network instead of the
+  // default bridge, so unrelated containers on the host can't reach the
+  // credential proxy. Docker-only, like --pids-limit in resourceLimitArgs.
+  if (CONTAINER_RUNTIME_BIN === 'docker') {
+    args.push('--network', CONTAINER_NETWORK);
+  }
 
   // Pass host timezone so container's local time matches the user's
   args.push('-e', `TZ=${TIMEZONE}`);

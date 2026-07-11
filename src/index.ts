@@ -32,8 +32,9 @@ import {
 } from './container-runner.js';
 import {
   cleanupOrphans,
+  ensureContainerNetwork,
   ensureContainerRuntimeRunning,
-  PROXY_BIND_HOST,
+  proxyBindHost,
 } from './container-runtime.js';
 import {
   deleteSession,
@@ -645,6 +646,10 @@ function recoverPendingMessages(): void {
 
 function ensureContainerSystemRunning(): void {
   ensureContainerRuntimeRunning();
+  // Must run before the proxy binds (proxyBindHost() may derive its address
+  // from this network's gateway) and before any container spawns (they are
+  // placed on this network via --network in container-runner.ts).
+  ensureContainerNetwork();
   cleanupOrphans();
 }
 
@@ -657,7 +662,7 @@ async function main(): Promise<void> {
   // Start credential proxy (containers route API calls through this)
   const proxyServer = await startCredentialProxy(
     CREDENTIAL_PROXY_PORT,
-    PROXY_BIND_HOST,
+    proxyBindHost(),
   );
 
   // API server is started after channels connect (needs Slack channel for notifications)

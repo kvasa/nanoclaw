@@ -19,11 +19,14 @@ vi.mock('child_process', () => ({
 }));
 
 import {
+  CONTAINER_NETWORK,
   CONTAINER_RUNTIME_BIN,
   readonlyMountArgs,
   resourceLimitArgs,
   stopContainerArgs,
   ensureContainerRuntimeRunning,
+  ensureContainerNetwork,
+  containerNetworkGateway,
   cleanupOrphans,
 } from './container-runtime.js';
 import { logger } from './logger.js';
@@ -187,5 +190,110 @@ describe('cleanupOrphans', () => {
       { count: 2, names: ['nanoclaw-a-1', 'nanoclaw-b-2'] },
       'Stopped orphaned containers',
     );
+  });
+});
+
+// --- ensureContainerNetwork ---
+
+describe('ensureContainerNetwork', () => {
+  it('skips creation when the network already exists', () => {
+    mockExecFileSync.mockReturnValueOnce(''); // inspect succeeds
+
+    ensureContainerNetwork();
+
+    expect(mockExecFileSync).toHaveBeenCalledTimes(1);
+    expect(mockExecFileSync).toHaveBeenCalledWith(
+      'docker',
+      ['network', 'inspect', CONTAINER_NETWORK],
+      { stdio: 'pipe' },
+    );
+  });
+
+  it('creates the network when inspect fails', () => {
+    mockExecFileSync.mockImplementationOnce(() => {
+      throw new Error('network not found');
+    });
+    mockExecFileSync.mockReturnValueOnce(''); // create succeeds
+
+    ensureContainerNetwork();
+
+    expect(mockExecFileSync).toHaveBeenCalledTimes(2);
+    expect(mockExecFileSync).toHaveBeenNthCalledWith(
+      1,
+      'docker',
+      ['network', 'inspect', CONTAINER_NETWORK],
+      { stdio: 'pipe' },
+    );
+    expect(mockExecFileSync).toHaveBeenNthCalledWith(
+      2,
+      'docker',
+      ['network', 'create', CONTAINER_NETWORK],
+      { stdio: 'pipe' },
+    );
+    expect(logger.info).toHaveBeenCalledWith(
+      { network: CONTAINER_NETWORK },
+      'Created dedicated container network',
+    );
+  });
+
+  it('warns and does not throw when both inspect and create fail', () => {
+    mockExecFileSync.mockImplementationOnce(() => {
+      throw new Error('network not found');
+    });
+    mockExecFileSync.mockImplementationOnce(() => {
+      throw new Error('permission denied');
+    });
+
+    expect(() => ensureContainerNetwork()).not.toThrow();
+
+    expect(logger.warn).toHaveBeenCalledWith(
+      expect.objectContaining({ err: expect.any(Error) }),
+      'Failed to create dedicated container network',
+    );
+  });
+});
+
+// --- containerNetworkGateway ---
+
+describe('containerNetworkGateway', () => {
+  it('parses the gateway IP from docker network inspect output', () => {
+    mockExecFileSync.mockReturnValueOnce('172.20.0.1\n');
+
+    const gateway = containerNetworkGateway();
+
+    expect(gateway).toBe('172.20.0.1');
+    expect(mockExecFileSync).toHaveBeenCalledWith(
+      'docker',
+      [
+        'network',
+        'inspect',
+        CONTAINER_NETWORK,
+        '--format',
+        '{{(index .IPAM.Config 0).Gateway}}',
+      ],
+      { stdio: ['pipe', 'pipe', 'pipe'], encoding: 'utf-8' },
+    );
+  });
+
+  it('returns undefined and warns when inspect fails', () => {
+    mockExecFileSync.mockImplementationOnce(() => {
+      throw new Error('docker not available');
+    });
+
+    const gateway = containerNetworkGateway();
+
+    expect(gateway).toBeUndefined();
+    expect(logger.warn).toHaveBeenCalledWith(
+      expect.objectContaining({ err: expect.any(Error) }),
+      'Failed to determine dedicated container network gateway',
+    );
+  });
+
+  it('returns undefined when the format output is empty', () => {
+    mockExecFileSync.mockReturnValueOnce('');
+
+    const gateway = containerNetworkGateway();
+
+    expect(gateway).toBeUndefined();
   });
 });

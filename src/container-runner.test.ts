@@ -86,7 +86,12 @@ function createFakeProcess() {
 
 let fakeProc: ReturnType<typeof createFakeProcess>;
 
-// Mock child_process.spawn
+// Mock child_process.spawn. Also stub execFileSync/execSync: container-runtime.js
+// (imported transitively via container-runner.ts) calls execFileSync for
+// ensureContainerNetwork()/containerNetworkGateway() as part of hostGatewayArgs().
+// Without this stub those would hit the *real* Docker daemon on the host
+// running the tests (creating/inspecting an actual "nanoclaw" network) —
+// this keeps the test suite hermetic and independent of a local Docker install.
 vi.mock('child_process', async () => {
   const actual =
     await vi.importActual<typeof import('child_process')>('child_process');
@@ -99,6 +104,12 @@ vi.mock('child_process', async () => {
         return new EventEmitter();
       },
     ),
+    execFileSync: vi.fn((_bin: string, args: string[] = []) => {
+      // Simulate: network already exists, gateway resolves to a fixed IP.
+      if (args.includes('--format')) return '172.30.0.1\n';
+      return '';
+    }),
+    execSync: vi.fn(() => ''),
   };
 });
 
@@ -107,6 +118,7 @@ import fs from 'fs';
 import path from 'path';
 
 import { runContainerAgent, ContainerOutput } from './container-runner.js';
+import { CONTAINER_NETWORK } from './container-runtime.js';
 import type { RegisteredGroup } from './types.js';
 
 const testGroup: RegisteredGroup = {
@@ -421,6 +433,45 @@ describe('container args credential hygiene', () => {
     // Guard against a vacuous pass: env flags are being produced at all.
     expect(args).toContain('-e');
     expect(args.filter((a) => /APPLE_|CALDAV_/.test(a))).toEqual([]);
+  });
+});
+
+describe('dedicated container network', () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    fakeProc = createFakeProcess();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('places the container on the dedicated nanoclaw network', async () => {
+    const resultPromise = runContainerAgent(
+      testGroup,
+      testInput,
+      () => {},
+      vi.fn(async () => {}),
+    );
+
+    emitOutputMarker(fakeProc, { status: 'success', result: 'ok' });
+    await vi.advanceTimersByTimeAsync(10);
+    fakeProc.emit('close', 0);
+    await vi.advanceTimersByTimeAsync(10);
+    await resultPromise;
+
+    const dockerRun = vi
+      .mocked(spawn)
+      .mock.calls.filter(
+        (call) => call[0] === 'docker' && (call[1] as string[])[0] === 'run',
+      )
+      .at(-1);
+    expect(dockerRun).toBeDefined();
+    const args = dockerRun![1] as string[];
+    const networkIdx = args.indexOf('--network');
+    expect(networkIdx).toBeGreaterThan(-1);
+    expect(args[networkIdx + 1]).toBe(CONTAINER_NETWORK);
+    expect(CONTAINER_NETWORK).toBe('nanoclaw');
   });
 });
 
