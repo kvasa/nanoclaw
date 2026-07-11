@@ -471,6 +471,197 @@ describe('API server', () => {
     });
   });
 
+  describe('terminal status resolution (null result must not hang the request)', () => {
+    it('resolves promptly on a null-result success without waiting for container exit (new container)', async () => {
+      const mockRunAgent = vi.mocked(runContainerAgent);
+      let releaseContainer: (() => void) | undefined;
+      mockRunAgent.mockImplementation(
+        async (_group, _input, onProcess, onOutput) => {
+          onProcess({} as any, 'test-container');
+          if (onOutput) {
+            await onOutput({
+              status: 'success',
+              result: null,
+              newSessionId: undefined,
+            });
+          }
+          // The container process itself keeps running (e.g. waiting for
+          // more IPC messages) — the HTTP request must not wait for this
+          // promise to settle.
+          await new Promise<void>((resolve) => {
+            releaseContainer = resolve;
+          });
+          return { status: 'success' as const, result: null };
+        },
+      );
+
+      server = await startApiServer(makeConfig());
+      const res = await request(server, {
+        body: JSON.stringify({ text: 'hello', groupId: 'test-group' }),
+        headers: {
+          'content-type': 'application/json',
+          authorization: `Bearer ${TEST_TOKEN}`,
+        },
+      });
+
+      expect(res.status).toBe(200);
+      const events = res.body
+        .split('\n\n')
+        .filter((line) => line.startsWith('data: '))
+        .map((line) => JSON.parse(line.replace('data: ', '')));
+
+      // No chunk (there was no text), but the request still completes.
+      expect(events).toEqual([{ type: 'done' }]);
+
+      releaseContainer?.();
+    });
+
+    it('resolves promptly on a null-result success without waiting for container exit (reuse path)', async () => {
+      const mockRunAgent = vi.mocked(runContainerAgent);
+      let containerOnOutput:
+        | ((result: {
+            status: 'success' | 'error';
+            result: string | null;
+            newSessionId?: string;
+            error?: string;
+          }) => Promise<void> | void)
+        | undefined;
+      let releaseContainer: (() => void) | undefined;
+
+      mockRunAgent.mockImplementation(
+        async (_group, _input, onProcess, onOutput) => {
+          onProcess({} as any, 'test-container');
+          containerOnOutput = onOutput;
+          if (onOutput) {
+            await onOutput({
+              status: 'success',
+              result: 'first turn',
+              newSessionId: undefined,
+            });
+          }
+          // Container stays alive after the first turn so the second
+          // request takes the reuse (pipe-via-IPC) path.
+          await new Promise<void>((resolve) => {
+            releaseContainer = resolve;
+          });
+          return { status: 'success' as const, result: null };
+        },
+      );
+
+      server = await startApiServer(makeConfig());
+
+      const res1 = await request(server, {
+        body: JSON.stringify({ text: 'hello', groupId: 'test-group' }),
+        headers: {
+          'content-type': 'application/json',
+          authorization: `Bearer ${TEST_TOKEN}`,
+        },
+      });
+      expect(res1.status).toBe(200);
+
+      // Second request reuses the still-alive container.
+      const secondRequestPromise = request(server, {
+        body: JSON.stringify({ text: 'follow up', groupId: 'test-group' }),
+        headers: {
+          'content-type': 'application/json',
+          authorization: `Bearer ${TEST_TOKEN}`,
+        },
+      });
+
+      // Let the reuse-path handler wire up its onResult before the
+      // container delivers the (mocked) streamed output for this turn.
+      await new Promise((r) => setTimeout(r, 20));
+      await containerOnOutput?.({
+        status: 'success',
+        result: null,
+        newSessionId: undefined,
+      });
+
+      const res2 = await secondRequestPromise;
+      expect(res2.status).toBe(200);
+      const events2 = res2.body
+        .split('\n\n')
+        .filter((line) => line.startsWith('data: '))
+        .map((line) => JSON.parse(line.replace('data: ', '')));
+      expect(events2).toEqual([{ type: 'done' }]);
+
+      releaseContainer?.();
+    });
+
+    it('resolves and emits an error event on a terminal error status', async () => {
+      const mockRunAgent = vi.mocked(runContainerAgent);
+      mockRunAgent.mockImplementation(
+        async (_group, _input, onProcess, onOutput) => {
+          onProcess({} as any, 'test-container');
+          if (onOutput) {
+            await onOutput({
+              status: 'error',
+              result: null,
+              error: 'boom',
+            });
+          }
+          return { status: 'error' as const, result: null, error: 'boom' };
+        },
+      );
+
+      server = await startApiServer(makeConfig());
+      const res = await request(server, {
+        body: JSON.stringify({ text: 'hello', groupId: 'test-group' }),
+        headers: {
+          'content-type': 'application/json',
+          authorization: `Bearer ${TEST_TOKEN}`,
+        },
+      });
+
+      expect(res.status).toBe(200);
+      const events = res.body
+        .split('\n\n')
+        .filter((line) => line.startsWith('data: '))
+        .map((line) => JSON.parse(line.replace('data: ', '')));
+
+      const errorEvent = events.find((e: any) => e.type === 'error');
+      expect(errorEvent).toEqual({ type: 'error', text: 'boom' });
+      expect(events[events.length - 1]).toEqual({ type: 'done' });
+    });
+
+    it('still streams a chunk and resolves when the result is non-null', async () => {
+      const mockRunAgent = vi.mocked(runContainerAgent);
+      mockRunAgent.mockImplementation(
+        async (_group, _input, onProcess, onOutput) => {
+          onProcess({} as any, 'test-container');
+          if (onOutput) {
+            await onOutput({
+              status: 'success',
+              result: 'hello',
+              newSessionId: undefined,
+            });
+          }
+          return { status: 'success' as const, result: 'hello' };
+        },
+      );
+
+      server = await startApiServer(makeConfig());
+      const res = await request(server, {
+        body: JSON.stringify({ text: 'hi', groupId: 'test-group' }),
+        headers: {
+          'content-type': 'application/json',
+          authorization: `Bearer ${TEST_TOKEN}`,
+        },
+      });
+
+      expect(res.status).toBe(200);
+      const events = res.body
+        .split('\n\n')
+        .filter((line) => line.startsWith('data: '))
+        .map((line) => JSON.parse(line.replace('data: ', '')));
+
+      expect(events).toEqual([
+        { type: 'chunk', text: 'hello' },
+        { type: 'done' },
+      ]);
+    });
+  });
+
   describe('error handling', () => {
     it('rejects oversized request body', async () => {
       server = await startApiServer(makeConfig());

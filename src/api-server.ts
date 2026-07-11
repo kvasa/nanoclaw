@@ -264,7 +264,19 @@ export function startApiServer(config: ApiServerConfig): Promise<Server> {
                     }
                   }
                 }
-                if (result.result) {
+                // Terminal marker: the agent turn finished, with or without
+                // text. Resolving only on a non-null result held the SSE
+                // response (and the group lock, via withGroupLock) open
+                // until the container's 30-min idle reap whenever the agent
+                // produced no user-visible text (e.g. IPC-only turns) — see
+                // task-scheduler.ts for the same terminal-status rule.
+                if (result.status === 'success' || result.status === 'error') {
+                  if (result.status === 'error') {
+                    sendSSE(res, {
+                      type: 'error',
+                      text: result.error || 'Unknown error',
+                    });
+                  }
                   existing.onResult = null;
                   existing.onProgress = null;
                   existing.resolveRequest = null;
@@ -311,8 +323,20 @@ export function startApiServer(config: ApiServerConfig): Promise<Server> {
                     }
                   }
                 }
-                // Resolve HTTP response after first output with a result
-                if (result.result && tracker.resolveRequest) {
+                // Terminal marker: resolve the HTTP response as soon as the
+                // agent turn finishes, with or without text — see the
+                // reuse-path comment above for why gating on a non-null
+                // result alone is wrong.
+                if (
+                  (result.status === 'success' || result.status === 'error') &&
+                  tracker.resolveRequest
+                ) {
+                  if (result.status === 'error') {
+                    sendSSE(res, {
+                      type: 'error',
+                      text: result.error || 'Unknown error',
+                    });
+                  }
                   const r = tracker.resolveRequest;
                   tracker.onResult = null;
                   tracker.onProgress = null;
