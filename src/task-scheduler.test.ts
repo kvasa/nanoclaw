@@ -88,6 +88,77 @@ describe('task scheduler', () => {
     expect(new Date(nextRun!).getTime()).toBe(expected);
   });
 
+  it('computeNextRun returns null (not throw) for an invalid cron expression', () => {
+    const task = {
+      id: 'invalid-cron',
+      group_folder: 'test',
+      chat_jid: 'test@g.us',
+      prompt: 'test',
+      schedule_type: 'cron' as const,
+      schedule_value: 'not a cron',
+      context_mode: 'isolated' as const,
+      next_run: new Date().toISOString(),
+      last_run: null,
+      last_result: null,
+      status: 'active' as const,
+      created_at: '2026-01-01T00:00:00.000Z',
+    };
+
+    let nextRun: string | null = 'unset';
+    expect(() => {
+      nextRun = computeNextRun(task);
+    }).not.toThrow();
+    expect(nextRun).toBeNull();
+  });
+
+  it('computeNextRun returns a future timestamp for a valid cron expression', () => {
+    const task = {
+      id: 'valid-cron',
+      group_folder: 'test',
+      chat_jid: 'test@g.us',
+      prompt: 'test',
+      schedule_type: 'cron' as const,
+      schedule_value: '0 9 * * *', // every day at 09:00
+      context_mode: 'isolated' as const,
+      next_run: new Date().toISOString(),
+      last_run: null,
+      last_result: null,
+      status: 'active' as const,
+      created_at: '2026-01-01T00:00:00.000Z',
+    };
+
+    const nextRun = computeNextRun(task);
+    expect(nextRun).not.toBeNull();
+    expect(new Date(nextRun!).getTime()).toBeGreaterThan(Date.now());
+  });
+
+  it('computeNextRun returns ~60s in the future when an interval task has no next_run anchor', () => {
+    const task = {
+      id: 'no-anchor',
+      group_folder: 'test',
+      chat_jid: 'test@g.us',
+      prompt: 'test',
+      schedule_type: 'interval' as const,
+      schedule_value: '60000',
+      context_mode: 'isolated' as const,
+      next_run: null,
+      last_run: null,
+      last_result: null,
+      status: 'active' as const,
+      created_at: '2026-01-01T00:00:00.000Z',
+    };
+
+    let nextRun: string | null = 'unset';
+    expect(() => {
+      nextRun = computeNextRun(task);
+    }).not.toThrow();
+    expect(nextRun).not.toBeNull();
+    const deltaMs = new Date(nextRun!).getTime() - Date.now();
+    expect(deltaMs).toBeGreaterThan(0);
+    expect(deltaMs).toBeLessThanOrEqual(60_000 + 1000); // allow small test-run slack
+    expect(deltaMs).toBeGreaterThan(60_000 - 1000);
+  });
+
   it('computeNextRun returns null for once-tasks', () => {
     const task = {
       id: 'once-test',
@@ -388,5 +459,54 @@ describe('task scheduler', () => {
     const offset =
       (new Date(nextRun!).getTime() - new Date(scheduledTime).getTime()) % ms;
     expect(offset).toBe(0);
+  });
+
+  it('pauses a recurring task whose schedule cannot be computed instead of hot-looping', async () => {
+    vi.useRealTimers(); // runTask uses real microtasks
+
+    createTask({
+      id: 'task-invalid-cron',
+      group_folder: 'tips',
+      chat_jid: 'slack:C123',
+      prompt: 'run',
+      schedule_type: 'cron',
+      schedule_value: 'not a cron',
+      context_mode: 'isolated',
+      next_run: new Date(Date.now() - 60_000).toISOString(),
+      status: 'active',
+      created_at: '2026-01-01T00:00:00.000Z',
+    });
+    const task = getTaskById('task-invalid-cron')!;
+
+    runContainerAgentMock.mockImplementation(async () => ({
+      status: 'success' as const,
+      result: 'final answer for user',
+    }));
+
+    const updateThreadTs = vi.fn();
+    const closeStdin = vi.fn();
+    const notifyIdle = vi.fn();
+
+    await runTask(task, {
+      registeredGroups: () => ({
+        'slack:C123': {
+          name: 'Tips',
+          folder: 'tips',
+          trigger: '@Jarmil',
+          added_at: '2026-01-01T00:00:00Z',
+        },
+      }),
+      getSessions: () => ({}),
+      queue: { updateThreadTs, closeStdin, notifyIdle } as any,
+      onProcess: () => {},
+      sendMessage: async () => {},
+    });
+
+    const updated = getTaskById('task-invalid-cron');
+    expect(updated?.status).toBe('paused');
+    // Task must not have been re-armed for polling.
+    expect(updated?.next_run).toBeNull();
+    // The "why did my task stop" trail should mention the invalid schedule.
+    expect(updated?.last_result).toMatch(/invalid cron schedule/);
   });
 });

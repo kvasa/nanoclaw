@@ -43,10 +43,18 @@ export function computeNextRun(task: ScheduledTask): string | null {
   const now = Date.now();
 
   if (task.schedule_type === 'cron') {
-    const interval = CronExpressionParser.parse(task.schedule_value, {
-      tz: TIMEZONE,
-    });
-    return interval.next().toISOString();
+    try {
+      const interval = CronExpressionParser.parse(task.schedule_value, {
+        tz: TIMEZONE,
+      });
+      return interval.next().toISOString();
+    } catch (err) {
+      logger.error(
+        { taskId: task.id, value: task.schedule_value, err },
+        'Invalid cron expression',
+      );
+      return null;
+    }
   }
 
   if (task.schedule_type === 'interval') {
@@ -61,9 +69,17 @@ export function computeNextRun(task: ScheduledTask): string | null {
     }
     // Anchor to the scheduled time, not now, to prevent drift.
     // Skip past any missed intervals so we always land in the future.
-    let next = new Date(task.next_run!).getTime() + ms;
-    while (next <= now) {
-      next += ms;
+    const base = new Date(task.next_run ?? 0).getTime();
+    if (task.next_run == null || Number.isNaN(base)) {
+      logger.warn(
+        { taskId: task.id, nextRun: task.next_run },
+        'Invalid next_run anchor for interval task',
+      );
+      return new Date(now + 60_000).toISOString();
+    }
+    let next = base + ms;
+    if (next <= now) {
+      next = base + ms * (Math.floor((now - base) / ms) + 1);
     }
     return new Date(next).toISOString();
   }
@@ -296,6 +312,12 @@ export async function runTask(
   });
 
   const nextRun = computeNextRun(task);
+  if (nextRun === null && task.schedule_type !== 'once') {
+    const resultSummary = `Error: invalid ${task.schedule_type} schedule "${task.schedule_value}" — task paused`;
+    updateTaskAfterRun(task.id, null, resultSummary); // records last_run/result, sets 'completed'
+    updateTask(task.id, { status: 'paused' }); // final status wins: paused
+    return;
+  }
   const resultSummary = error
     ? `Error: ${error}`
     : result
