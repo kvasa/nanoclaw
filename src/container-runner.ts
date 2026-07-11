@@ -319,6 +319,10 @@ function buildContainerArgs(
   // startup). Bound to this group and the MCP servers it enabled, so the
   // endpoint returns only the credentials this container is entitled to.
   args.push('-e', `NANOCLAW_CREDS_TOKEN=${credsToken}`);
+  // The same token authenticates the proxy passthrough: the Claude Agent SDK
+  // reads ANTHROPIC_CUSTOM_HEADERS and attaches the header to every API
+  // request, which the proxy requires before injecting real credentials.
+  args.push('-e', `ANTHROPIC_CUSTOM_HEADERS=x-nanoclaw-token: ${credsToken}`);
 
   // Mirror the host's auth method with a placeholder value.
   // API key mode: SDK sends x-api-key, proxy replaces with real key.

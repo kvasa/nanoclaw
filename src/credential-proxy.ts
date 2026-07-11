@@ -43,6 +43,15 @@ const MCP_SERVER_CREDENTIALS: Record<string, string[]> = {
  */
 const UNIVERSAL_CREDENTIALS = ['GEMINI_API_KEY'];
 
+/**
+ * Upper bound on a passthrough request body. This proxy carries full Claude
+ * API conversations — long transcripts plus base64-encoded images — so the
+ * limit must sit comfortably above the API's own ~32MB request ceiling.
+ * 64MB rejects nothing legitimate while still bounding memory per request
+ * (the whole body is buffered before forwarding).
+ */
+const MAX_BODY_SIZE = 64 * 1024 * 1024;
+
 export type AuthMode = 'api-key' | 'oauth';
 
 export interface ProxyConfig {
@@ -79,6 +88,11 @@ export function startCredentialProxy(
   const makeRequest = isHttps ? httpsRequest : httpRequest;
 
   return new Promise((resolve, reject) => {
+    // Trust rule for every endpoint on this server: a request is only
+    // credentialed if it presents a token this host issued to a container it
+    // spawned (resolveCredsToken). The proxy listens on the Docker bridge,
+    // where unrelated containers can reach it — nothing may be injected or
+    // served without that token. Any new endpoint must apply the same check.
     const server = createServer((req, res) => {
       // Serve MCP credentials to containers so they are never passed as docker -e flags.
       // Token auth prevents rogue processes on the docker bridge from reading credentials.
@@ -115,9 +129,43 @@ export function startCredentialProxy(
         return;
       }
 
+      // Passthrough: authenticate before anything else. The Claude Agent SDK
+      // attaches the per-container token as x-nanoclaw-token (via
+      // ANTHROPIC_CUSTOM_HEADERS, set in buildContainerArgs); the SDK owns
+      // the Authorization header, so it cannot carry this token. Unknown or
+      // missing token -> 401, no upstream request, no credential injected.
+      // (Map lookup by token; no string comparison against a secret.)
+      const passthroughToken = req.headers['x-nanoclaw-token'];
+      const passthroughGrant =
+        typeof passthroughToken === 'string'
+          ? resolveCredsToken(passthroughToken)
+          : undefined;
+      if (!passthroughGrant) {
+        res.writeHead(401, { 'Content-Type': 'text/plain' });
+        res.end('Unauthorized');
+        return;
+      }
+
       const chunks: Buffer[] = [];
-      req.on('data', (c) => chunks.push(c));
+      let size = 0;
+      let rejected = false;
+      req.on('data', (c: Buffer) => {
+        size += c.length;
+        if (size > MAX_BODY_SIZE) {
+          rejected = true;
+          logger.warn(
+            { group: passthroughGrant.groupFolder, size },
+            'Credential proxy request body too large',
+          );
+          res.writeHead(413, { 'Content-Type': 'text/plain' });
+          res.end('Payload Too Large');
+          req.destroy();
+          return;
+        }
+        chunks.push(c);
+      });
       req.on('end', () => {
+        if (rejected) return;
         const body = Buffer.concat(chunks);
         const headers: Record<string, string | number | string[] | undefined> =
           {
@@ -130,6 +178,8 @@ export function startCredentialProxy(
         delete headers['connection'];
         delete headers['keep-alive'];
         delete headers['transfer-encoding'];
+        // The proxy token is host-internal; never forward it upstream.
+        delete headers['x-nanoclaw-token'];
 
         if (authMode === 'api-key') {
           // API key mode: inject x-api-key on every request

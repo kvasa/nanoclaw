@@ -56,12 +56,16 @@ describe('credential-proxy', () => {
   let proxyPort: number;
   let upstreamPort: number;
   let lastUpstreamHeaders: http.IncomingHttpHeaders;
+  let upstreamCalls: number;
 
   beforeEach(async () => {
     lastUpstreamHeaders = {};
+    upstreamCalls = 0;
 
     upstreamServer = http.createServer((req, res) => {
+      upstreamCalls++;
       lastUpstreamHeaders = { ...req.headers };
+      req.resume();
       res.writeHead(200, { 'content-type': 'application/json' });
       res.end(JSON.stringify({ ok: true }));
     });
@@ -86,6 +90,11 @@ describe('credential-proxy', () => {
     return (proxyServer.address() as AddressInfo).port;
   }
 
+  /** Issue a valid passthrough token, as buildContainerArgs does per spawn. */
+  function passthroughToken(): string {
+    return issueCredsToken({ groupFolder: 'test', enabledMcpServers: [] });
+  }
+
   it('API-key mode injects x-api-key and strips placeholder', async () => {
     proxyPort = await startProxy({ ANTHROPIC_API_KEY: 'sk-ant-real-key' });
 
@@ -97,6 +106,7 @@ describe('credential-proxy', () => {
         headers: {
           'content-type': 'application/json',
           'x-api-key': 'placeholder',
+          'x-nanoclaw-token': passthroughToken(),
         },
       },
       '{}',
@@ -118,6 +128,7 @@ describe('credential-proxy', () => {
         headers: {
           'content-type': 'application/json',
           authorization: 'Bearer placeholder',
+          'x-nanoclaw-token': passthroughToken(),
         },
       },
       '{}',
@@ -142,6 +153,7 @@ describe('credential-proxy', () => {
         headers: {
           'content-type': 'application/json',
           'x-api-key': 'temp-key-from-exchange',
+          'x-nanoclaw-token': passthroughToken(),
         },
       },
       '{}',
@@ -151,7 +163,7 @@ describe('credential-proxy', () => {
     expect(lastUpstreamHeaders['authorization']).toBeUndefined();
   });
 
-  it('strips hop-by-hop headers', async () => {
+  it('strips hop-by-hop headers and the proxy token', async () => {
     proxyPort = await startProxy({ ANTHROPIC_API_KEY: 'sk-ant-real-key' });
 
     await makeRequest(
@@ -164,6 +176,7 @@ describe('credential-proxy', () => {
           connection: 'keep-alive',
           'keep-alive': 'timeout=5',
           'transfer-encoding': 'chunked',
+          'x-nanoclaw-token': passthroughToken(),
         },
       },
       '{}',
@@ -174,6 +187,118 @@ describe('credential-proxy', () => {
     // custom keep-alive and transfer-encoding must not be forwarded.
     expect(lastUpstreamHeaders['keep-alive']).toBeUndefined();
     expect(lastUpstreamHeaders['transfer-encoding']).toBeUndefined();
+    // The host-internal proxy token must never reach the upstream API.
+    expect(lastUpstreamHeaders['x-nanoclaw-token']).toBeUndefined();
+  });
+
+  // --- passthrough authentication ---
+
+  it('passthrough without a token gets 401 and no upstream request', async () => {
+    proxyPort = await startProxy({ ANTHROPIC_API_KEY: 'sk-ant-real-key' });
+
+    const res = await makeRequest(
+      proxyPort,
+      {
+        method: 'POST',
+        path: '/v1/messages',
+        headers: {
+          'content-type': 'application/json',
+          'x-api-key': 'placeholder',
+        },
+      },
+      '{}',
+    );
+
+    expect(res.statusCode).toBe(401);
+    expect(upstreamCalls).toBe(0);
+  });
+
+  it('passthrough with an unknown token gets 401 and no upstream request', async () => {
+    proxyPort = await startProxy({ ANTHROPIC_API_KEY: 'sk-ant-real-key' });
+
+    const res = await makeRequest(
+      proxyPort,
+      {
+        method: 'POST',
+        path: '/v1/messages',
+        headers: {
+          'content-type': 'application/json',
+          'x-api-key': 'placeholder',
+          'x-nanoclaw-token': '0'.repeat(64),
+        },
+      },
+      '{}',
+    );
+
+    expect(res.statusCode).toBe(401);
+    expect(upstreamCalls).toBe(0);
+  });
+
+  it('passthrough with a valid token is forwarded with the credential', async () => {
+    proxyPort = await startProxy({ ANTHROPIC_API_KEY: 'sk-ant-real-key' });
+
+    const res = await makeRequest(
+      proxyPort,
+      {
+        method: 'POST',
+        path: '/v1/messages',
+        headers: {
+          'content-type': 'application/json',
+          'x-nanoclaw-token': passthroughToken(),
+        },
+      },
+      '{}',
+    );
+
+    expect(res.statusCode).toBe(200);
+    expect(upstreamCalls).toBe(1);
+    expect('x-api-key' in lastUpstreamHeaders).toBe(true);
+  });
+
+  it('oversized body gets 413 and no upstream request', async () => {
+    proxyPort = await startProxy({ ANTHROPIC_API_KEY: 'sk-ant-real-key' });
+
+    const oversized = Buffer.alloc(64 * 1024 * 1024 + 1, 'a');
+    // The proxy destroys the socket mid-upload; depending on timing the
+    // client sees the 413 or a reset connection. Either way: no upstream.
+    try {
+      const res = await makeRequest(
+        proxyPort,
+        {
+          method: 'POST',
+          path: '/v1/messages',
+          headers: {
+            'content-type': 'application/json',
+            'x-nanoclaw-token': passthroughToken(),
+          },
+        },
+        oversized.toString(),
+      );
+      expect(res.statusCode).toBe(413);
+    } catch (err) {
+      expect((err as NodeJS.ErrnoException).code).toMatch(/ECONNRESET|EPIPE/);
+    }
+    expect(upstreamCalls).toBe(0);
+  });
+
+  it('body under the limit is forwarded normally', async () => {
+    proxyPort = await startProxy({ ANTHROPIC_API_KEY: 'sk-ant-real-key' });
+
+    const res = await makeRequest(
+      proxyPort,
+      {
+        method: 'POST',
+        path: '/v1/messages',
+        headers: {
+          'content-type': 'application/json',
+          'x-nanoclaw-token': passthroughToken(),
+        },
+      },
+      Buffer.alloc(1024 * 1024, 'a').toString(),
+    );
+
+    expect(res.statusCode).toBe(200);
+    expect(upstreamCalls).toBe(1);
   });
 
   // --- /mcp-creds endpoint ---
@@ -359,7 +484,10 @@ describe('credential-proxy', () => {
       {
         method: 'POST',
         path: '/v1/messages',
-        headers: { 'content-type': 'application/json' },
+        headers: {
+          'content-type': 'application/json',
+          'x-nanoclaw-token': passthroughToken(),
+        },
       },
       '{}',
     );
