@@ -50,6 +50,8 @@ export class GmailChannel implements Channel {
   private pollIntervalMs: number;
   private pollTimer: ReturnType<typeof setTimeout> | null = null;
   private processedIds = new Set<string>();
+  private processFailures = new Map<string, number>();
+  private static readonly MAX_PROCESS_ATTEMPTS = 3;
   private threadMeta = new Map<string, ThreadMeta>();
   private threadMetaInsertOrder: string[] = [];
   private static readonly THREAD_META_MAX = 2500;
@@ -448,15 +450,41 @@ export class GmailChannel implements Channel {
       for (const stub of messages) {
         if (!stub.id || this.processedIds.has(stub.id)) continue;
         this.processedIds.add(stub.id);
-        addGmailProcessedId(stub.id);
-
-        await this.processMessage(stub.id);
+        try {
+          await this.processMessage(stub.id);
+          addGmailProcessedId(stub.id);
+          this.processFailures.delete(stub.id);
+        } catch (err) {
+          const attempts = (this.processFailures.get(stub.id) ?? 0) + 1;
+          if (attempts >= GmailChannel.MAX_PROCESS_ATTEMPTS) {
+            // Permanently failing message — give up durably so it can't loop forever.
+            addGmailProcessedId(stub.id);
+            this.processFailures.delete(stub.id);
+            logger.error(
+              { messageId: stub.id, attempts, err },
+              'Gmail message failed repeatedly, giving up',
+            );
+          } else {
+            this.processFailures.set(stub.id, attempts);
+            this.processedIds.delete(stub.id); // retry on next poll
+            logger.warn(
+              { messageId: stub.id, attempts, err },
+              'Gmail message processing failed, will retry next poll',
+            );
+          }
+        }
       }
 
       // Cap processed ID set to prevent unbounded growth
       if (this.processedIds.size > 5000) {
         const ids = [...this.processedIds];
         this.processedIds = new Set(ids.slice(ids.length - 2500));
+      }
+
+      // Safety bound on the failures map (retryable ids stay in the next
+      // poll's small window, so this should stay tiny in practice).
+      if (this.processFailures.size > 1000) {
+        this.processFailures.clear();
       }
 
       this.consecutiveErrors = 0;
