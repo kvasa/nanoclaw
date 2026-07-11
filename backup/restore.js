@@ -4,16 +4,23 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
-import { execSync } from 'node:child_process';
+import { execSync, execFileSync } from 'node:child_process';
 import os from 'node:os';
 import readline from 'node:readline';
+import { pathToFileURL } from 'node:url';
 
 // Constants (must match backup.js)
 const PROJECT_ROOT = path.resolve(import.meta.dirname, '..');
 const BACKUPS_DIR = path.join(PROJECT_ROOT, 'backups');
 const MAGIC = Buffer.from('NCBK');
-const FORMAT_VERSION = 1;
+// KDF history, dispatched on the header version byte:
+//   1 = PBKDF2-SHA512, 100k iterations (backups written before 2026-07-11)
+//   2 = scrypt N=2^17, r=8, p=1
+// The v1 path must NOT be deleted while any v1 archive might still exist —
+// removing it silently makes every old backup unrestorable, and you find
+// out at the worst possible moment.
 const PBKDF2_ITERATIONS = 100_000;
+const SCRYPT_PARAMS = { N: 2 ** 17, r: 8, p: 1, maxmem: 256 * 1024 * 1024 };
 const HEADER_SIZE = 53; // MAGIC(4) + VERSION(1) + SALT(16) + IV(16) + AUTH_TAG(16)
 
 const CRITICAL_FILES = [
@@ -88,16 +95,23 @@ function decryptFile(inputPath, outputPath, password) {
   }
 
   const version = data.readUInt8(4);
-  if (version !== FORMAT_VERSION) {
-    throw new Error(`Unsupported backup format version: ${version} (expected ${FORMAT_VERSION}).`);
-  }
 
   const salt = data.subarray(5, 21);
   const iv = data.subarray(21, 37);
   const authTag = data.subarray(37, 53);
   const encrypted = data.subarray(53);
 
-  const key = crypto.pbkdf2Sync(password, salt, PBKDF2_ITERATIONS, 32, 'sha512');
+  let key;
+  if (version === 1) {
+    // Legacy PBKDF2 backups — keep this path for as long as any might exist.
+    key = crypto.pbkdf2Sync(password, salt, PBKDF2_ITERATIONS, 32, 'sha512');
+  } else if (version === 2) {
+    key = crypto.scryptSync(password, salt, 32, SCRYPT_PARAMS);
+  } else {
+    throw new Error(
+      `Unsupported backup format version: ${version} (supported: 1, 2).`
+    );
+  }
 
   const decipher = crypto.createDecipheriv('aes-256-gcm', key, iv);
   decipher.setAuthTag(authTag);
@@ -145,6 +159,27 @@ function resolveBackupPath(arg) {
   }
   console.log(`\nUsing latest: ${backups[0]}\n`);
   return path.join(BACKUPS_DIR, backups[0]);
+}
+
+// ── Archive safety ──────────────────────────────────────────────────
+
+// Authenticated decryption proves the archive was encrypted with our
+// password; it proves nothing about the paths inside it. Refuse to extract
+// any member that is absolute or contains a `..` segment, so a tampered or
+// corrupted archive cannot write outside PROJECT_ROOT.
+function assertSafeArchive(tarPath) {
+  const listing = execFileSync('tar', ['-tzf', tarPath], {
+    encoding: 'utf-8',
+    maxBuffer: 64 * 1024 * 1024,
+  });
+  for (const member of listing.split('\n')) {
+    if (!member) continue;
+    if (member.startsWith('/') || /(^|\/)\.\.(\/|$)/.test(member)) {
+      throw new Error(
+        `Refusing to extract: archive member has an unsafe path: ${member}`
+      );
+    }
+  }
 }
 
 // ── Safety checks ───────────────────────────────────────────────────
@@ -242,8 +277,9 @@ async function main() {
       }
     }
 
-    // 6. Extract
+    // 6. Extract — validate member paths first, then extract
     console.log('Extracting...');
+    assertSafeArchive(tarPath);
     execSync(`tar -xzf "${tarPath}" -C "${PROJECT_ROOT}"`, { stdio: 'pipe' });
     console.log('  Files extracted to project root.');
 
@@ -267,7 +303,17 @@ async function main() {
   }
 }
 
-main().catch((err) => {
-  console.error(`\nError: ${err.message}`);
-  process.exit(1);
-});
+// Exported for tests only; run main() only when executed directly so the
+// test import does not trigger a real (destructive) restore.
+export { decryptFile, assertSafeArchive };
+
+const isDirectRun =
+  process.argv[1] &&
+  import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href;
+
+if (isDirectRun) {
+  main().catch((err) => {
+    console.error(`\nError: ${err.message}`);
+    process.exit(1);
+  });
+}

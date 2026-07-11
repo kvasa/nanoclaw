@@ -7,6 +7,7 @@ export default defineConfig({
       'setup/**/*.test.ts',
       'skills-engine/**/*.test.ts',
       'container/agent-runner/src/**/*.test.ts',
+      'backup/**/*.test.js',
     ],
   },
 });

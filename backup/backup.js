@@ -7,13 +7,22 @@ import crypto from 'node:crypto';
 import { execSync } from 'node:child_process';
 import os from 'node:os';
 import { createRequire } from 'node:module';
+import { pathToFileURL } from 'node:url';
 
 // Constants
 const PROJECT_ROOT = path.resolve(import.meta.dirname, '..');
 const BACKUPS_DIR = path.join(PROJECT_ROOT, 'backups');
 const MAGIC = Buffer.from('NCBK');
-const FORMAT_VERSION = 1;
-const PBKDF2_ITERATIONS = 100_000;
+// Version 2 = scrypt KDF. Version 1 (PBKDF2) is still restorable via
+// restore.js, which dispatches on this header byte.
+const FORMAT_VERSION = 2;
+// scrypt parameters for new backups. The archive leaves the host (Slack), so
+// the KDF must make offline guessing expensive. 128*N*r bytes of memory are
+// needed; maxmem must sit above that or scryptSync throws.
+const SCRYPT_PARAMS = { N: 2 ** 17, r: 8, p: 1, maxmem: 256 * 1024 * 1024 };
+// The password is the only thing between an offline attacker and every
+// credential in the archive — refuse to encrypt with a weak one.
+const MIN_PASSWORD_LENGTH = 16;
 const MAX_FILE_SIZE = 50 * 1024 * 1024; // 50MB
 const RETENTION_DAYS = 7; // Delete encrypted backups older than this
 
@@ -187,10 +196,27 @@ function backupDatabase(tempDir, stats) {
 
 // ── Encryption ──────────────────────────────────────────────────────
 
+// Validate the backup password before any archive is produced. Returns a
+// human-readable reason when the password is unusable, null when it is fine.
+// Never include the password (or its length) in the reason.
+function validateBackupPassword(password) {
+  if (!password) {
+    return 'BACKUP_PASSWORD not set in .env or environment.';
+  }
+  if (password.length < MIN_PASSWORD_LENGTH) {
+    return `BACKUP_PASSWORD is too short (minimum ${MIN_PASSWORD_LENGTH} characters). The encrypted archive is uploaded off-host; a weak password exposes every credential in it to offline cracking.`;
+  }
+  return null;
+}
+
+function deriveKey(password, salt) {
+  return crypto.scryptSync(password, salt, 32, SCRYPT_PARAMS);
+}
+
 function encryptFile(inputPath, outputPath, password) {
   const salt = crypto.randomBytes(16);
   const iv = crypto.randomBytes(16);
-  const key = crypto.pbkdf2Sync(password, salt, PBKDF2_ITERATIONS, 32, 'sha512');
+  const key = deriveKey(password, salt);
 
   const plaintext = fs.readFileSync(inputPath);
   const cipher = crypto.createCipheriv('aes-256-gcm', key, iv);
@@ -252,25 +278,25 @@ function pruneOldBackups() {
 // ── Slack upload ────────────────────────────────────────────────────
 
 // Resolve the target Slack channel id (without the "slack:" prefix).
-// Priority: BACKUP_SLACK_CHANNEL env, then the dedicated "backups" group,
-// then the is_main=1 group as a last resort.
+// Priority: BACKUP_SLACK_CHANNEL env, then the dedicated "backups" group.
+// Deliberately NO fallback to the main group: this archive carries every
+// credential the system has, and a misconfiguration must skip the upload,
+// not post the secrets into whatever channel happens to be primary.
 const BACKUP_CHANNEL_FOLDER = 'backups';
 
-function resolveSlackChannelId(envChannel) {
+function resolveSlackChannelId(
+  envChannel,
+  dbPath = path.join(PROJECT_ROOT, 'store', 'messages.db'),
+) {
   if (envChannel) return envChannel.replace(/^slack:/, '');
-  const dbPath = path.join(PROJECT_ROOT, 'store', 'messages.db');
   if (!fs.existsSync(dbPath)) return null;
   try {
     const require = createRequire(import.meta.url);
     const Database = require('better-sqlite3');
     const db = new Database(dbPath, { readonly: true });
-    const row =
-      db
-        .prepare('SELECT jid FROM registered_groups WHERE folder = ? LIMIT 1')
-        .get(BACKUP_CHANNEL_FOLDER) ||
-      db
-        .prepare('SELECT jid FROM registered_groups WHERE is_main = 1 LIMIT 1')
-        .get();
+    const row = db
+      .prepare('SELECT jid FROM registered_groups WHERE folder = ? LIMIT 1')
+      .get(BACKUP_CHANNEL_FOLDER);
     db.close();
     if (!row || !row.jid) return null;
     return String(row.jid).replace(/^slack:/, '');
@@ -293,7 +319,9 @@ async function sendBackupToSlack(encFilePath) {
     env.BACKUP_SLACK_CHANNEL || process.env.BACKUP_SLACK_CHANNEL
   );
   if (!channelId) {
-    console.log('  [skip] no Slack channel resolved — backup not sent');
+    console.log(
+      '  [skip] no dedicated backup channel (set BACKUP_SLACK_CHANNEL or create a "backups" group) — backup not sent'
+    );
     return;
   }
   try {
@@ -318,12 +346,14 @@ async function sendBackupToSlack(encFilePath) {
 async function main() {
   console.log('NanoClaw Backup\n');
 
-  // 1. Read password
+  // 1. Read and validate password — refuse to produce a weakly-protected
+  // archive rather than upload one to a third party.
   const env = readEnvFile(['BACKUP_PASSWORD']);
   const password = env.BACKUP_PASSWORD || process.env.BACKUP_PASSWORD;
-  if (!password) {
-    console.error('Error: BACKUP_PASSWORD not set in .env or environment.');
-    console.error('Add BACKUP_PASSWORD=your-password to .env and try again.');
+  const passwordProblem = validateBackupPassword(password);
+  if (passwordProblem) {
+    console.error(`Error: ${passwordProblem}`);
+    console.error('Set a strong BACKUP_PASSWORD in .env and try again.');
     process.exit(1);
   }
 
@@ -486,7 +516,25 @@ async function main() {
   }
 }
 
-main().catch((err) => {
-  console.error('Backup failed:', err);
-  process.exit(1);
-});
+// Exported for tests only; run main() only when executed directly so the
+// test import does not trigger a real backup.
+export {
+  encryptFile,
+  deriveKey,
+  validateBackupPassword,
+  resolveSlackChannelId,
+  FORMAT_VERSION,
+  MIN_PASSWORD_LENGTH,
+  SCRYPT_PARAMS,
+};
+
+const isDirectRun =
+  process.argv[1] &&
+  import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href;
+
+if (isDirectRun) {
+  main().catch((err) => {
+    console.error('Backup failed:', err);
+    process.exit(1);
+  });
+}

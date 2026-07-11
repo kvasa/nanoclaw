@@ -85,6 +85,8 @@ systemctl --user restart nanoclaw
 
 Daily encrypted backup runs via cron at midnight. Backs up SQLite DB, WhatsApp auth, group memory, sessions, .env, and skills state into AES-256-GCM encrypted archive in `backups/`.
 
+**The archive is credential-bearing** (plaintext `.env`, WhatsApp session, every API key) — it must only ever be uploaded to a private channel. The Slack upload goes exclusively to `BACKUP_SLACK_CHANNEL` or the dedicated `backups` group; if neither exists the upload is skipped (never falls back to the main channel).
+
 ```bash
 npm run backup               # Manual backup
 npm run restore               # Restore from latest backup
