@@ -10,8 +10,10 @@ import {
   getNewMessages,
   getTaskById,
   logTaskRun,
+  ownsIssuedMessageTs,
   pruneOldMessages,
   pruneOldTaskRunLogs,
+  recordIssuedMessageTs,
   resolveDrainWindow,
   setRegisteredGroup,
   storeChatMetadata,
@@ -848,5 +850,73 @@ describe('retention pruning', () => {
     expect(pruneOldTaskRunLogs(30)).toBe(1);
     // Exactly one row survived: a prune-everything pass finds one row.
     expect(pruneOldTaskRunLogs(0)).toBe(1);
+  });
+});
+
+describe('issued_message_ts (edit/delete ownership persistence)', () => {
+  it('persists ownership through the real table (not an in-process cache)', () => {
+    // Unlike the old in-memory Map, this round-trips through SQLite, which
+    // in production is the same on-disk file across a host restart — so an
+    // ownership row recorded before a restart is still there after.
+    recordIssuedMessageTs('chat@g.us', '1700000000.000001', 'group-a');
+
+    expect(
+      ownsIssuedMessageTs('chat@g.us', '1700000000.000001', 'group-a'),
+    ).toBe(true);
+  });
+
+  it('fails closed for an unknown ts', () => {
+    expect(
+      ownsIssuedMessageTs('chat@g.us', '1700000000.999999', 'group-a'),
+    ).toBe(false);
+  });
+
+  it('fails closed when the ts belongs to a different group', () => {
+    recordIssuedMessageTs('chat@g.us', '1700000000.000002', 'group-a');
+
+    expect(
+      ownsIssuedMessageTs('chat@g.us', '1700000000.000002', 'group-b'),
+    ).toBe(false);
+  });
+
+  it('bounds the table to the newest 1000 rows, evicting the oldest', () => {
+    const total = 1005;
+    for (let i = 0; i < total; i++) {
+      recordIssuedMessageTs(
+        'chat@g.us',
+        `170000${String(i).padStart(4, '0')}.000000`,
+        'group-a',
+      );
+    }
+
+    let owned = 0;
+    for (let i = 0; i < total; i++) {
+      if (
+        ownsIssuedMessageTs(
+          'chat@g.us',
+          `170000${String(i).padStart(4, '0')}.000000`,
+          'group-a',
+        )
+      ) {
+        owned++;
+      }
+    }
+    // Exactly 1000 of the 1005 inserted rows survived the bound.
+    expect(owned).toBe(1000);
+
+    // The oldest 5 of the 1005 inserted rows are gone...
+    for (let i = 0; i < 5; i++) {
+      expect(
+        ownsIssuedMessageTs(
+          'chat@g.us',
+          `170000${String(i).padStart(4, '0')}.000000`,
+          'group-a',
+        ),
+      ).toBe(false);
+    }
+    // ...while the most recent one survived.
+    expect(
+      ownsIssuedMessageTs('chat@g.us', '1700001004.000000', 'group-a'),
+    ).toBe(true);
   });
 });

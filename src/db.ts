@@ -96,6 +96,15 @@ function createSchema(database: Database.Database): void {
       processed_at TEXT NOT NULL
     );
     CREATE INDEX IF NOT EXISTS idx_gmail_processed_at ON gmail_processed_ids(processed_at);
+
+    CREATE TABLE IF NOT EXISTS issued_message_ts (
+      chat_jid TEXT NOT NULL,
+      message_ts TEXT NOT NULL,
+      group_folder TEXT NOT NULL,
+      issued_at TEXT NOT NULL,
+      PRIMARY KEY (chat_jid, message_ts)
+    );
+    CREATE INDEX IF NOT EXISTS idx_issued_message_ts_at ON issued_message_ts(issued_at);
   `);
 
   // Add context_mode column if it doesn't exist (migration for existing DBs)
@@ -814,6 +823,50 @@ export function pruneOldTaskRunLogs(days: number): number {
     .prepare(`DELETE FROM task_run_logs WHERE run_at < ?`)
     .run(cutoff);
   return info.changes;
+}
+
+/** Cap on tracked ownership rows — see `issued_message_ts` in createSchema. */
+const MAX_TRACKED_MESSAGE_TS = 1000;
+
+/**
+ * Record that `groupFolder` issued `messageTs` in `chatJid`, so a later
+ * edit_message/delete_message from that group can be authorized against
+ * ownership. Persisted (survives host restarts) and bounded to the newest
+ * MAX_TRACKED_MESSAGE_TS rows, enforced here on every insert.
+ */
+export function recordIssuedMessageTs(
+  chatJid: string,
+  messageTs: string,
+  groupFolder: string,
+): void {
+  db.prepare(
+    `INSERT OR REPLACE INTO issued_message_ts (chat_jid, message_ts, group_folder, issued_at)
+     VALUES (?, ?, ?, ?)`,
+  ).run(chatJid, messageTs, groupFolder, new Date().toISOString());
+
+  db.prepare(
+    `DELETE FROM issued_message_ts WHERE rowid NOT IN (
+       SELECT rowid FROM issued_message_ts ORDER BY issued_at DESC, rowid DESC LIMIT ?
+     )`,
+  ).run(MAX_TRACKED_MESSAGE_TS);
+}
+
+/**
+ * Whether `groupFolder` is the one that issued `messageTs` in `chatJid`.
+ * Missing row (never issued, evicted by the bound, or issued to a different
+ * group) returns false — fail closed.
+ */
+export function ownsIssuedMessageTs(
+  chatJid: string,
+  messageTs: string,
+  groupFolder: string,
+): boolean {
+  const row = db
+    .prepare(
+      `SELECT group_folder FROM issued_message_ts WHERE chat_jid = ? AND message_ts = ?`,
+    )
+    .get(chatJid, messageTs) as { group_folder: string } | undefined;
+  return row?.group_folder === groupFolder;
 }
 
 // --- JSON migration ---

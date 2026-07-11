@@ -5,7 +5,14 @@ import { CronExpressionParser } from 'cron-parser';
 
 import { DATA_DIR, IPC_POLL_INTERVAL, TIMEZONE } from './config.js';
 import { AvailableGroup } from './container-runner.js';
-import { createTask, deleteTask, getTaskById, updateTask } from './db.js';
+import {
+  createTask,
+  deleteTask,
+  getTaskById,
+  ownsIssuedMessageTs,
+  recordIssuedMessageTs,
+  updateTask,
+} from './db.js';
 import { isValidGroupFolder } from './group-folder.js';
 import { logger } from './logger.js';
 import {
@@ -102,14 +109,16 @@ export interface IpcDeps {
  * agent claims — the same principle as deriving group identity from the IPC
  * directory rather than from a field in the JSON.
  *
- * Bounded: only the most recent MAX_TRACKED_MESSAGE_TS entries are kept. An
- * agent editing a status line it posted minutes ago is the real use case;
- * editing a message from thousands of messages ago is not. In-memory by
- * design: after a restart an edit of a pre-restart ts is refused (fail
- * closed) and the agent posts a fresh message instead.
+ * Persisted in SQLite (`issued_message_ts`, see db.ts) so it survives host
+ * restarts: a scheduled monitor that edits its previous status line keeps
+ * proving ownership across a restart instead of falling back to posting a
+ * duplicate line. Bounded to the newest 1000 rows, enforced in
+ * recordIssuedMessageTs on every insert — an agent editing a status line it
+ * posted minutes ago is the real use case; editing a message from thousands
+ * of messages ago is not. Still fail-closed: a ts the DB doesn't know about
+ * (never issued, evicted by the bound, or issued to a different group) is
+ * refused.
  */
-const MAX_TRACKED_MESSAGE_TS = 1000;
-const issuedMessageTs = new Map<string, string>(); // `${chatJid} ${ts}` -> groupFolder
 
 /** @internal - exported for tests only. */
 export function _recordIssuedTs(
@@ -117,13 +126,7 @@ export function _recordIssuedTs(
   chatJid: string,
   ts: string,
 ): void {
-  const key = `${chatJid} ${ts}`;
-  issuedMessageTs.set(key, groupFolder);
-  if (issuedMessageTs.size > MAX_TRACKED_MESSAGE_TS) {
-    // Map preserves insertion order — drop the oldest.
-    const oldest = issuedMessageTs.keys().next().value;
-    if (oldest !== undefined) issuedMessageTs.delete(oldest);
-  }
+  recordIssuedMessageTs(chatJid, ts, groupFolder);
 }
 
 /** @internal - exported for tests only. */
@@ -132,7 +135,7 @@ export function _ownsMessageTs(
   chatJid: string,
   ts: string,
 ): boolean {
-  return issuedMessageTs.get(`${chatJid} ${ts}`) === groupFolder;
+  return ownsIssuedMessageTs(chatJid, ts, groupFolder);
 }
 
 let ipcWatcherRunning = false;
