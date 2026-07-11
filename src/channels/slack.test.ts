@@ -855,6 +855,96 @@ describe('SlackChannel', () => {
         text: 'second',
       });
     });
+
+    it('retries a queued message via the periodic flush timer without a reconnect', async () => {
+      vi.useFakeTimers();
+      try {
+        const opts = createTestOpts();
+        const channel = new SlackChannel(opts);
+
+        await channel.connect();
+
+        currentApp().client.chat.postMessage.mockRejectedValueOnce(
+          new Error('transient'),
+        );
+        await channel.sendMessage('slack:C0123456789', 'Retry me');
+        expect((channel as any).outgoingQueue.length).toBe(1);
+
+        currentApp().client.chat.postMessage.mockClear();
+        currentApp().client.chat.postMessage.mockResolvedValue(undefined);
+
+        // No disconnect/reconnect happens — only the periodic flush timer
+        // should pick this up.
+        await vi.advanceTimersByTimeAsync(30_000);
+
+        expect(currentApp().client.chat.postMessage).toHaveBeenCalledWith({
+          channel: 'C0123456789',
+          text: 'Retry me',
+        });
+        expect((channel as any).outgoingQueue.length).toBe(0);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('does not flush while disconnected even after the interval elapses', async () => {
+      vi.useFakeTimers();
+      try {
+        const opts = createTestOpts();
+        const channel = new SlackChannel(opts);
+
+        await channel.connect();
+
+        (channel as any).outgoingQueue.push({
+          jid: 'slack:C0123456789',
+          text: 'pending',
+        });
+        (channel as any).connected = false;
+
+        currentApp().client.chat.postMessage.mockClear();
+
+        await vi.advanceTimersByTimeAsync(30_000);
+
+        expect(currentApp().client.chat.postMessage).not.toHaveBeenCalled();
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('a timer tick during an in-flight flush is a no-op (flushing guard)', async () => {
+      vi.useFakeTimers();
+      try {
+        const opts = createTestOpts();
+        const channel = new SlackChannel(opts);
+
+        await channel.connect();
+
+        (channel as any).outgoingQueue.push({
+          jid: 'slack:C0123456789',
+          text: 'pending',
+        });
+
+        let resolveSend: (() => void) | undefined;
+        currentApp().client.chat.postMessage.mockImplementation(
+          () =>
+            new Promise<void>((resolve) => {
+              resolveSend = resolve;
+            }),
+        );
+
+        // First tick starts a flush that never resolves yet.
+        await vi.advanceTimersByTimeAsync(30_000);
+        expect(currentApp().client.chat.postMessage).toHaveBeenCalledTimes(1);
+
+        // Second tick while still flushing — the `flushing` guard makes it a no-op.
+        await vi.advanceTimersByTimeAsync(30_000);
+        expect(currentApp().client.chat.postMessage).toHaveBeenCalledTimes(1);
+
+        resolveSend?.();
+      } finally {
+        vi.useRealTimers();
+      }
+    });
   });
 
   // --- sendFile ---

@@ -27,6 +27,7 @@ import {
 
 const GROUP_SYNC_INTERVAL_MS = 24 * 60 * 60 * 1000; // 24 hours
 const MAX_OUTGOING_QUEUE_SIZE = 1000;
+const QUEUE_FLUSH_INTERVAL_MS = 30_000;
 
 export interface WhatsAppChannelOpts {
   onMessage: OnInboundMessage;
@@ -43,6 +44,7 @@ export class WhatsAppChannel implements Channel {
   private outgoingQueue: Array<{ jid: string; text: string }> = [];
   private flushing = false;
   private groupSyncTimerStarted = false;
+  private queueFlushTimerStarted = false;
   private reconnectAttempts = 0;
   private firstOpenResolve?: () => void;
 
@@ -170,6 +172,19 @@ export class WhatsAppChannel implements Channel {
               logger.error({ err }, 'Periodic group sync failed'),
             );
           }, GROUP_SYNC_INTERVAL_MS);
+        }
+
+        // Retry queued messages even when no reconnect happens — a send that
+        // failed on a nominally-alive socket otherwise waits for the next
+        // disconnect/reconnect cycle, which may never come.
+        if (!this.queueFlushTimerStarted) {
+          this.queueFlushTimerStarted = true;
+          setInterval(() => {
+            if (!this.connected || this.outgoingQueue.length === 0) return;
+            this.flushOutgoingQueue().catch((err) =>
+              logger.error({ err }, 'Periodic outgoing queue flush failed'),
+            );
+          }, QUEUE_FLUSH_INTERVAL_MS);
         }
 
         // Signal first successful connection to whoever awaits connect() —

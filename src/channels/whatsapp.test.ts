@@ -876,6 +876,105 @@ describe('WhatsAppChannel', () => {
         text: 'Andy: Third',
       });
     });
+
+    it('retries a queued message via the periodic flush timer without a reconnect', async () => {
+      vi.useFakeTimers();
+      try {
+        const opts = createTestOpts();
+        const channel = new WhatsAppChannel(opts);
+
+        const connectPromise = channel.connect();
+        await vi.advanceTimersByTimeAsync(0);
+        triggerConnection('open');
+        await connectPromise;
+
+        fakeSocket.sendMessage.mockRejectedValueOnce(new Error('transient'));
+        await channel.sendMessage('test@g.us', 'Retry me');
+        expect((channel as any).outgoingQueue.length).toBe(1);
+
+        fakeSocket.sendMessage.mockClear();
+        fakeSocket.sendMessage.mockResolvedValue(undefined);
+
+        // No disconnect/reconnect happens — only the periodic flush timer
+        // should pick this up.
+        await vi.advanceTimersByTimeAsync(30_000);
+
+        expect(fakeSocket.sendMessage).toHaveBeenCalledWith('test@g.us', {
+          text: 'Andy: Retry me',
+        });
+        expect((channel as any).outgoingQueue.length).toBe(0);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('does not flush while disconnected even after the interval elapses', async () => {
+      vi.useFakeTimers();
+      try {
+        const opts = createTestOpts();
+        const channel = new WhatsAppChannel(opts);
+
+        const connectPromise = channel.connect();
+        await vi.advanceTimersByTimeAsync(0);
+        triggerConnection('open');
+        await connectPromise;
+
+        // Simulate a queued message while nominally disconnected, without
+        // going through the full reconnect-backoff machinery (out of scope
+        // here — we're only testing the timer's connected-guard).
+        (channel as any).outgoingQueue.push({
+          jid: 'test@g.us',
+          text: 'Andy: pending',
+        });
+        (channel as any).connected = false;
+
+        fakeSocket.sendMessage.mockClear();
+
+        await vi.advanceTimersByTimeAsync(30_000);
+
+        expect(fakeSocket.sendMessage).not.toHaveBeenCalled();
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('a timer tick during an in-flight flush is a no-op (flushing guard)', async () => {
+      vi.useFakeTimers();
+      try {
+        const opts = createTestOpts();
+        const channel = new WhatsAppChannel(opts);
+
+        const connectPromise = channel.connect();
+        await vi.advanceTimersByTimeAsync(0);
+        triggerConnection('open');
+        await connectPromise;
+
+        (channel as any).outgoingQueue.push({
+          jid: 'test@g.us',
+          text: 'Andy: pending',
+        });
+
+        let resolveSend: (() => void) | undefined;
+        fakeSocket.sendMessage.mockImplementation(
+          () =>
+            new Promise<void>((resolve) => {
+              resolveSend = resolve;
+            }),
+        );
+
+        // First tick starts a flush that never resolves yet.
+        await vi.advanceTimersByTimeAsync(30_000);
+        expect(fakeSocket.sendMessage).toHaveBeenCalledTimes(1);
+
+        // Second tick while still flushing — the `flushing` guard makes it a no-op.
+        await vi.advanceTimersByTimeAsync(30_000);
+        expect(fakeSocket.sendMessage).toHaveBeenCalledTimes(1);
+
+        resolveSend?.();
+      } finally {
+        vi.useRealTimers();
+      }
+    });
   });
 
   // --- Group metadata sync ---

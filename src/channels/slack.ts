@@ -22,6 +22,7 @@ import {
 // Messages exceeding this are split into sequential chunks.
 const MAX_MESSAGE_LENGTH = 4000;
 const MAX_OUTGOING_QUEUE_SIZE = 1000;
+const QUEUE_FLUSH_INTERVAL_MS = 30_000;
 
 // The message subtypes we process. Bolt delivers all subtypes via app.event('message');
 // we filter to regular messages (GenericMessageEvent, subtype undefined) and bot messages
@@ -50,6 +51,7 @@ export class SlackChannel implements Channel {
   private connected = false;
   private outgoingQueue: Array<{ jid: string; text: string }> = [];
   private flushing = false;
+  private queueFlushTimerStarted = false;
   private userNameCache = new Map<string, string>();
   private pendingApprovals = new Map<string, PendingApproval>();
 
@@ -247,6 +249,19 @@ export class SlackChannel implements Channel {
 
     // Flush any messages queued before connection
     await this.flushOutgoingQueue();
+
+    // Retry queued messages even when no reconnect happens — a send that
+    // failed while nominally connected otherwise waits for the next
+    // disconnect/reconnect cycle, which may never come.
+    if (!this.queueFlushTimerStarted) {
+      this.queueFlushTimerStarted = true;
+      setInterval(() => {
+        if (!this.connected || this.outgoingQueue.length === 0) return;
+        this.flushOutgoingQueue().catch((err) =>
+          logger.error({ err }, 'Periodic outgoing queue flush failed'),
+        );
+      }, QUEUE_FLUSH_INTERVAL_MS);
+    }
 
     // Sync channel names on startup
     await this.syncChannelMetadata();
