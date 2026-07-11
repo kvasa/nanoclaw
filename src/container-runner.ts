@@ -293,7 +293,8 @@ function buildContainerArgs(
   mounts: VolumeMount[],
   containerName: string,
   credsToken: string,
-  enabledMcpServers?: string[],
+  enabledMcpServers: string[] | undefined,
+  groupFolder: string,
 ): string[] {
   const args: string[] = ['run', '-i', '--rm', '--name', containerName];
 
@@ -357,11 +358,24 @@ function buildContainerArgs(
   // they would be visible via `docker inspect`. Instead, the container's entrypoint.sh
   // fetches them from the credential proxy at startup (/mcp-creds endpoint).
 
-  // Garmin: mount cached OAuth tokens so MCP server doesn't need to re-authenticate
+  // Garmin: per-group token cache. A single shared ~/.garmin-mcp mounted rw
+  // into every garmin-enabled group let one group read or tamper with
+  // another's OAuth tokens; per-group dirs keep the container boundary intact.
+  // Seeded once from the legacy shared dir so existing auth keeps working.
   if (enabledMcpServers?.includes('garmin')) {
-    const garminTokenDir = path.join(os.homedir(), '.garmin-mcp');
-    if (fs.existsSync(garminTokenDir)) {
-      args.push('-v', `${garminTokenDir}:/home/node/.garmin-mcp:rw`);
+    const legacyDir = path.join(os.homedir(), '.garmin-mcp');
+    const groupTokenDir = path.join(
+      DATA_DIR,
+      'sessions',
+      groupFolder,
+      'garmin-mcp',
+    );
+    if (!fs.existsSync(groupTokenDir) && fs.existsSync(legacyDir)) {
+      fs.mkdirSync(path.dirname(groupTokenDir), { recursive: true });
+      fs.cpSync(legacyDir, groupTokenDir, { recursive: true });
+    }
+    if (fs.existsSync(groupTokenDir)) {
+      args.push('-v', `${groupTokenDir}:/home/node/.garmin-mcp:rw`);
     }
   }
 
@@ -414,6 +428,7 @@ export async function runContainerAgent(
     containerName,
     credsToken,
     input.enabledMcpServers,
+    group.folder,
   );
 
   // Inject trigger message timestamp for Slack thread replies.

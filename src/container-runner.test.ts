@@ -45,6 +45,19 @@ vi.mock('fs', async () => {
       readdirSync: vi.fn(() => []),
       statSync: vi.fn(() => ({ isDirectory: () => false })),
       copyFileSync: vi.fn(),
+      cpSync: vi.fn(),
+    },
+  };
+});
+
+// Mock os (only homedir, which locates the legacy shared Garmin token dir)
+vi.mock('os', async () => {
+  const actual = await vi.importActual<typeof import('os')>('os');
+  return {
+    ...actual,
+    default: {
+      ...actual,
+      homedir: vi.fn(() => '/tmp/nanoclaw-test-home'),
     },
   };
 });
@@ -90,6 +103,8 @@ vi.mock('child_process', async () => {
 });
 
 import { spawn } from 'child_process';
+import fs from 'fs';
+import path from 'path';
 
 import { runContainerAgent, ContainerOutput } from './container-runner.js';
 import type { RegisteredGroup } from './types.js';
@@ -406,5 +421,102 @@ describe('container args credential hygiene', () => {
     // Guard against a vacuous pass: env flags are being produced at all.
     expect(args).toContain('-e');
     expect(args.filter((a) => /APPLE_|CALDAV_/.test(a))).toEqual([]);
+  });
+});
+
+describe('Garmin per-group token directory', () => {
+  const legacyDir = path.join('/tmp/nanoclaw-test-home', '.garmin-mcp');
+  const groupTokenDir = path.join(
+    '/tmp/nanoclaw-test-data',
+    'sessions',
+    'test-group',
+    'garmin-mcp',
+  );
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+    fakeProc = createFakeProcess();
+    // Reset to the file's default (nothing exists) before each test so
+    // earlier tests in this suite don't leak state into later ones.
+    vi.mocked(fs.existsSync).mockImplementation(() => false);
+    vi.mocked(fs.mkdirSync).mockReset();
+    vi.mocked(fs.cpSync).mockReset();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  async function runAndGetDockerArgs(
+    enabledMcpServers?: string[],
+  ): Promise<string[]> {
+    const resultPromise = runContainerAgent(
+      testGroup,
+      { ...testInput, enabledMcpServers },
+      () => {},
+      vi.fn(async () => {}),
+    );
+
+    emitOutputMarker(fakeProc, { status: 'success', result: 'ok' });
+    await vi.advanceTimersByTimeAsync(10);
+    fakeProc.emit('close', 0);
+    await vi.advanceTimersByTimeAsync(10);
+    await resultPromise;
+
+    const dockerRun = vi
+      .mocked(spawn)
+      .mock.calls.filter(
+        (call) => call[0] === 'docker' && (call[1] as string[])[0] === 'run',
+      )
+      .at(-1);
+    expect(dockerRun).toBeDefined();
+    return dockerRun![1] as string[];
+  }
+
+  it('garmin enabled and already seeded: mounts the per-group dir, not the shared homedir one', async () => {
+    // Simulate a group that was already seeded on a previous run: the
+    // per-group dir exists, so no copy from the legacy dir is needed.
+    vi.mocked(fs.existsSync).mockImplementation((p) => p === groupTokenDir);
+
+    const args = await runAndGetDockerArgs(['garmin']);
+
+    expect(args).toContain('-v');
+    expect(args).toContain(`${groupTokenDir}:/home/node/.garmin-mcp:rw`);
+    expect(args.some((a) => a.includes(legacyDir))).toBe(false);
+    expect(fs.cpSync).not.toHaveBeenCalled();
+  });
+
+  it('garmin enabled, no per-group dir yet, legacy dir present: seeds per-group dir from legacy and mounts it', async () => {
+    // Start with only the legacy shared dir existing. Once the code copies
+    // it (fs.cpSync), flip the per-group dir to "exists" — mirroring what a
+    // real filesystem would do — so the mount-check that follows the copy
+    // sees it.
+    let groupDirSeeded = false;
+    vi.mocked(fs.existsSync).mockImplementation((p) => {
+      if (p === groupTokenDir) return groupDirSeeded;
+      if (p === legacyDir) return true;
+      return false;
+    });
+    vi.mocked(fs.cpSync).mockImplementation(() => {
+      groupDirSeeded = true;
+    });
+
+    const args = await runAndGetDockerArgs(['garmin']);
+
+    expect(fs.mkdirSync).toHaveBeenCalledWith(path.dirname(groupTokenDir), {
+      recursive: true,
+    });
+    expect(fs.cpSync).toHaveBeenCalledWith(legacyDir, groupTokenDir, {
+      recursive: true,
+    });
+    expect(args).toContain(`${groupTokenDir}:/home/node/.garmin-mcp:rw`);
+    expect(args.some((a) => a.includes(legacyDir))).toBe(false);
+  });
+
+  it('garmin not enabled: no garmin-mcp mount at all', async () => {
+    const args = await runAndGetDockerArgs(undefined);
+
+    expect(args.some((a) => a.includes('garmin-mcp'))).toBe(false);
+    expect(fs.cpSync).not.toHaveBeenCalled();
   });
 });
