@@ -214,6 +214,89 @@ describe('container-runner timeout behavior', () => {
   });
 });
 
+describe('output callback failure never leaves the run pending', () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    fakeProc = createFakeProcess();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  // The load-bearing test: before the fix, a rejecting callback poisoned
+  // outputChain, the completion path's .then never ran, and this promise
+  // never settled (the test failed by timeout).
+  it('a rejecting onOutput still settles the run, as an error', async () => {
+    const onOutput = vi.fn(async () => {
+      throw new Error('setSession exploded');
+    });
+    const resultPromise = runContainerAgent(
+      testGroup,
+      testInput,
+      () => {},
+      onOutput,
+    );
+
+    emitOutputMarker(fakeProc, { status: 'success', result: 'hi' });
+    await vi.advanceTimersByTimeAsync(10);
+    fakeProc.emit('close', 0);
+    await vi.advanceTimersByTimeAsync(10);
+
+    const result = await resultPromise;
+    expect(result.status).toBe('error');
+    expect(result.error).toContain('Output callback failed');
+  });
+
+  it('a synchronously-throwing onOutput still settles the run', async () => {
+    const onOutput = vi.fn(() => {
+      throw new Error('sync boom');
+    }) as unknown as (output: ContainerOutput) => Promise<void>;
+    const resultPromise = runContainerAgent(
+      testGroup,
+      testInput,
+      () => {},
+      onOutput,
+    );
+
+    emitOutputMarker(fakeProc, { status: 'success', result: 'hi' });
+    await vi.advanceTimersByTimeAsync(10);
+    fakeProc.emit('close', 0);
+    await vi.advanceTimersByTimeAsync(10);
+
+    const result = await resultPromise;
+    expect(result.status).toBe('error');
+  });
+
+  it('a callback failing on the first output still delivers the second', async () => {
+    const seen: (string | null | undefined)[] = [];
+    const onOutput = vi.fn(async (output: ContainerOutput) => {
+      seen.push(output.result);
+      if (seen.length === 1) throw new Error('first one fails');
+    });
+    const resultPromise = runContainerAgent(
+      testGroup,
+      testInput,
+      () => {},
+      onOutput,
+    );
+
+    emitOutputMarker(fakeProc, { status: 'success', result: 'first' });
+    await vi.advanceTimersByTimeAsync(10);
+    emitOutputMarker(fakeProc, { status: 'success', result: 'second' });
+    await vi.advanceTimersByTimeAsync(10);
+    fakeProc.emit('close', 0);
+    await vi.advanceTimersByTimeAsync(10);
+
+    await resultPromise;
+    expect(onOutput).toHaveBeenCalledTimes(2);
+    expect(seen).toEqual(['first', 'second']);
+  });
+
+  // The happy path (callback resolves -> status success + newSessionId) is
+  // covered by 'normal exit after output resolves as success' above.
+});
+
 describe('container args credential hygiene', () => {
   const CRED_KEYS = ['APPLE_ID', 'APPLE_APP_PASSWORD', 'CALDAV_BASE_URL'];
   const savedEnv: Record<string, string | undefined> = {};

@@ -489,6 +489,7 @@ export async function runContainerAgent(
     let parseBuffer = '';
     let newSessionId: string | undefined;
     let outputChain = Promise.resolve();
+    let callbackFailed = false;
 
     container.stdout.on('data', (data) => {
       const chunk = data.toString();
@@ -559,7 +560,21 @@ export async function runContainerAgent(
             resetTimeout();
             // Call onOutput for all markers (including null results)
             // so idle timers start even for "silent" query completions.
-            outputChain = outputChain.then(() => onOutput(parsed));
+            // A failing callback must not poison the chain: log it, keep
+            // the chain fulfilled so later streamed outputs are still
+            // delivered, and record that something went wrong. The async
+            // wrapper catches sync throws and rejections identically.
+            outputChain = outputChain.then(async () => {
+              try {
+                await onOutput(parsed);
+              } catch (err) {
+                callbackFailed = true;
+                logger.error(
+                  { group: group.name, err },
+                  'Output callback failed',
+                );
+              }
+            });
           } catch (err) {
             logger.warn(
               { group: group.name, error: err },
@@ -662,13 +677,33 @@ export async function runContainerAgent(
             { group: group.name, containerName, duration, code },
             'Container timed out after output (idle cleanup)',
           );
-          outputChain.then(() => {
-            safeResolve({
-              status: 'success',
-              result: null,
-              newSessionId,
+          outputChain
+            .then(() => {
+              if (callbackFailed) {
+                safeResolve({
+                  status: 'error',
+                  result: null,
+                  error: 'Output callback failed during the run',
+                });
+              } else {
+                safeResolve({
+                  status: 'success',
+                  result: null,
+                  newSessionId,
+                });
+              }
+            })
+            .catch((err) => {
+              logger.error(
+                { group: group.name, containerName, err },
+                'Output chain rejected; resolving run as error',
+              );
+              safeResolve({
+                status: 'error',
+                result: null,
+                error: `Output callback failed: ${err instanceof Error ? err.message : String(err)}`,
+              });
             });
-          });
           return;
         }
 
@@ -746,17 +781,37 @@ export async function runContainerAgent(
 
       // Streaming mode: wait for output chain to settle, return completion marker
       if (onOutput) {
-        outputChain.then(() => {
-          logger.info(
-            { group: group.name, duration, newSessionId },
-            'Container completed (streaming mode)',
-          );
-          safeResolve({
-            status: 'success',
-            result: null,
-            newSessionId,
+        outputChain
+          .then(() => {
+            logger.info(
+              { group: group.name, duration, newSessionId },
+              'Container completed (streaming mode)',
+            );
+            if (callbackFailed) {
+              safeResolve({
+                status: 'error',
+                result: null,
+                error: 'Output callback failed during the run',
+              });
+            } else {
+              safeResolve({
+                status: 'success',
+                result: null,
+                newSessionId,
+              });
+            }
+          })
+          .catch((err) => {
+            logger.error(
+              { group: group.name, containerName, err },
+              'Output chain rejected; resolving run as error',
+            );
+            safeResolve({
+              status: 'error',
+              result: null,
+              error: `Output callback failed: ${err instanceof Error ? err.message : String(err)}`,
+            });
           });
-        });
         return;
       }
 
