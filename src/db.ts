@@ -343,6 +343,60 @@ export function storeMessageDirect(msg: {
   );
 }
 
+/**
+ * Resolve a full oldest-first drain window against the equal-timestamp
+ * boundary hazard. `rows` must be sorted ascending by (timestamp, id).
+ *
+ * The poll cursor advances to the max returned timestamp and the next poll
+ * uses a strict `timestamp > ?` comparison. If the LIMIT cuts inside a group
+ * of rows sharing the boundary timestamp, advancing to that timestamp would
+ * permanently skip the group's remaining rows. In that case, trim the
+ * boundary-timestamp rows from this batch and hold the cursor just below the
+ * boundary — the complete group is returned by the next poll, with no loss
+ * and no double-processing.
+ *
+ * Degenerate case: if every row in the window shares one timestamp, trimming
+ * would return nothing forever; keep the batch and advance past it (same
+ * behavior as before this helper existed).
+ *
+ * Exported for tests.
+ */
+export function resolveDrainWindow(
+  rows: NewMessage[],
+  limit: number,
+  lastTimestamp: string,
+): { messages: NewMessage[]; newTimestamp: string } {
+  let newTimestamp = lastTimestamp;
+  for (const row of rows) {
+    if (row.timestamp > newTimestamp) newTimestamp = row.timestamp;
+  }
+
+  if (rows.length === 0 || rows.length < limit) {
+    return { messages: rows, newTimestamp };
+  }
+
+  // Rows are ascending, so equal timestamps are contiguous and the boundary
+  // timestamp is the last row's.
+  const boundary = rows[rows.length - 1].timestamp;
+  const firstBoundaryIdx = rows.findIndex((r) => r.timestamp === boundary);
+
+  if (firstBoundaryIdx === 0) {
+    // Degenerate: the whole window shares one timestamp.
+    return { messages: rows, newTimestamp };
+  }
+  if (firstBoundaryIdx === rows.length - 1) {
+    // Boundary timestamp is unique within the window — no group was cut.
+    return { messages: rows, newTimestamp };
+  }
+
+  // Window edge cuts inside a group of equal timestamps: trim the group and
+  // hold the cursor at the largest strictly-smaller timestamp.
+  return {
+    messages: rows.slice(0, firstBoundaryIdx),
+    newTimestamp: rows[firstBoundaryIdx - 1].timestamp,
+  };
+}
+
 export function getNewMessages(
   jids: string[],
   lastTimestamp: string,
@@ -352,24 +406,52 @@ export function getNewMessages(
   if (jids.length === 0) return { messages: [], newTimestamp: lastTimestamp };
 
   const placeholders = jids.map(() => '?').join(',');
+  const draining = lastTimestamp !== '';
   // Filter bot messages using both the is_bot_message flag AND the content
   // prefix as a backstop for messages written before the migration ran.
-  // Subquery takes the N most recent, outer query re-sorts chronologically.
-  const sql = `
-    SELECT * FROM (
+  //
+  // Steady state (non-empty cursor): drain OLDEST-first so the cursor only
+  // ever advances contiguously. Rows beyond the LIMIT remain > cursor and are
+  // picked up by the next poll — bursts add latency instead of losing rows.
+  //
+  // Bootstrap (empty cursor): the WHERE clause matches the whole table, so
+  // the subquery takes the N most recent and the outer query re-sorts
+  // chronologically — deliberately skipping old history on a fresh install.
+  const sql = draining
+    ? `
       SELECT id, chat_jid, sender, sender_name, content, timestamp, is_from_me
       FROM messages
       WHERE timestamp > ? AND chat_jid IN (${placeholders})
         AND is_bot_message = 0 AND content NOT LIKE ?
         AND content != '' AND content IS NOT NULL
-      ORDER BY timestamp DESC
+      ORDER BY timestamp, id
       LIMIT ?
-    ) ORDER BY timestamp
-  `;
+    `
+    : `
+      SELECT * FROM (
+        SELECT id, chat_jid, sender, sender_name, content, timestamp, is_from_me
+        FROM messages
+        WHERE timestamp > ? AND chat_jid IN (${placeholders})
+          AND is_bot_message = 0 AND content NOT LIKE ?
+          AND content != '' AND content IS NOT NULL
+        ORDER BY timestamp DESC
+        LIMIT ?
+      ) ORDER BY timestamp
+    `;
 
   const rows = db
     .prepare(sql)
     .all(lastTimestamp, ...jids, `${botPrefix}:%`, limit) as NewMessage[];
+
+  if (draining) {
+    if (rows.length === limit) {
+      logger.warn(
+        { limit },
+        'getNewMessages window full — draining backlog across polls',
+      );
+    }
+    return resolveDrainWindow(rows, limit, lastTimestamp);
+  }
 
   let newTimestamp = lastTimestamp;
   for (const row of rows) {

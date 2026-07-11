@@ -12,6 +12,7 @@ import {
   logTaskRun,
   pruneOldMessages,
   pruneOldTaskRunLogs,
+  resolveDrainWindow,
   setRegisteredGroup,
   storeChatMetadata,
   storeMessage,
@@ -299,6 +300,247 @@ describe('getNewMessages', () => {
     expect(messages).toHaveLength(0);
     expect(newTimestamp).toBe('');
   });
+
+  describe('burst draining (cursor set, backlog exceeds limit)', () => {
+    function seedBurst(jid: string, count: number, day: string): void {
+      storeChatMetadata(jid, `${day}T00:00:00.000Z`);
+      for (let i = 1; i <= count; i++) {
+        store({
+          id: `b-${String(i).padStart(2, '0')}`,
+          chat_jid: jid,
+          sender: 'user@s.whatsapp.net',
+          sender_name: 'User',
+          content: `burst ${i}`,
+          timestamp: `${day}T00:00:${String(i).padStart(2, '0')}.000Z`,
+        });
+      }
+    }
+
+    it('drains a burst larger than the limit across polls without losing messages', () => {
+      seedBurst('burst@g.us', 15, '2024-02-01');
+
+      const first = getNewMessages(
+        ['burst@g.us'],
+        '2024-02-01T00:00:00.000Z',
+        'Andy',
+        10,
+      );
+      // Oldest 10 first; cursor stops at the last contiguously returned row
+      expect(first.messages.map((m) => m.id)).toEqual(
+        Array.from(
+          { length: 10 },
+          (_, i) => `b-${String(i + 1).padStart(2, '0')}`,
+        ),
+      );
+      expect(first.newTimestamp).toBe('2024-02-01T00:00:10.000Z');
+
+      const second = getNewMessages(
+        ['burst@g.us'],
+        first.newTimestamp,
+        'Andy',
+        10,
+      );
+      expect(second.messages.map((m) => m.id)).toEqual(
+        Array.from(
+          { length: 5 },
+          (_, i) => `b-${String(i + 11).padStart(2, '0')}`,
+        ),
+      );
+      expect(second.newTimestamp).toBe('2024-02-01T00:00:15.000Z');
+
+      // Union of both polls covers all 15 ids exactly once
+      const allIds = [...first.messages, ...second.messages].map((m) => m.id);
+      expect(allIds).toHaveLength(15);
+      expect(new Set(allIds).size).toBe(15);
+    });
+
+    it('bootstrap (empty cursor) still returns only the newest rows', () => {
+      seedBurst('burst@g.us', 15, '2024-02-01');
+
+      const { messages, newTimestamp } = getNewMessages(
+        ['burst@g.us'],
+        '',
+        'Andy',
+        10,
+      );
+      expect(messages).toHaveLength(10);
+      // Newest row present, oldest deliberately skipped (no history replay)
+      expect(messages.map((m) => m.id)).toContain('b-15');
+      expect(messages.map((m) => m.id)).not.toContain('b-01');
+      // Chronological order and global-max cursor
+      expect(messages[0].id).toBe('b-06');
+      expect(newTimestamp).toBe('2024-02-01T00:00:15.000Z');
+    });
+
+    it('does not lose or double-process rows sharing the timestamp at the window edge', () => {
+      storeChatMetadata('edge@g.us', '2024-03-01T00:00:00.000Z');
+      const seed = (id: string, timestamp: string) =>
+        store({
+          id,
+          chat_jid: 'edge@g.us',
+          sender: 'user@s.whatsapp.net',
+          sender_name: 'User',
+          content: `edge ${id}`,
+          timestamp,
+        });
+      seed('e-1', '2024-03-01T00:00:01.000Z');
+      seed('e-2', '2024-03-01T00:00:02.000Z');
+      // Three rows sharing one timestamp; a limit of 4 cuts inside the group
+      seed('e-3a', '2024-03-01T00:00:03.000Z');
+      seed('e-3b', '2024-03-01T00:00:03.000Z');
+      seed('e-3c', '2024-03-01T00:00:03.000Z');
+
+      const first = getNewMessages(
+        ['edge@g.us'],
+        '2024-03-01T00:00:00.000Z',
+        'Andy',
+        4,
+      );
+      // Boundary group trimmed; cursor held just below the boundary
+      expect(first.messages.map((m) => m.id)).toEqual(['e-1', 'e-2']);
+      expect(first.newTimestamp).toBe('2024-03-01T00:00:02.000Z');
+
+      const second = getNewMessages(
+        ['edge@g.us'],
+        first.newTimestamp,
+        'Andy',
+        4,
+      );
+      // The complete equal-timestamp group arrives in one piece next poll
+      expect(second.messages.map((m) => m.id)).toEqual([
+        'e-3a',
+        'e-3b',
+        'e-3c',
+      ]);
+      expect(second.newTimestamp).toBe('2024-03-01T00:00:03.000Z');
+
+      const allIds = [...first.messages, ...second.messages].map((m) => m.id);
+      expect(allIds).toHaveLength(5);
+      expect(new Set(allIds).size).toBe(5);
+    });
+
+    it('drain branch still filters bot messages and empty content', () => {
+      storeChatMetadata('filter@g.us', '2024-04-01T00:00:00.000Z');
+      store({
+        id: 'f-1',
+        chat_jid: 'filter@g.us',
+        sender: 'user@s.whatsapp.net',
+        sender_name: 'User',
+        content: 'real message 1',
+        timestamp: '2024-04-01T00:00:01.000Z',
+      });
+      storeMessage({
+        id: 'f-2',
+        chat_jid: 'filter@g.us',
+        sender: 'bot@s.whatsapp.net',
+        sender_name: 'Andy',
+        content: 'bot reply',
+        timestamp: '2024-04-01T00:00:02.000Z',
+        is_from_me: true,
+        is_bot_message: true,
+      });
+      // Legacy bot message written before the is_bot_message migration:
+      // flag unset, caught by the content-prefix backstop
+      store({
+        id: 'f-3',
+        chat_jid: 'filter@g.us',
+        sender: 'bot@s.whatsapp.net',
+        sender_name: 'Andy',
+        content: 'Andy: legacy bot reply',
+        timestamp: '2024-04-01T00:00:03.000Z',
+      });
+      store({
+        id: 'f-4',
+        chat_jid: 'filter@g.us',
+        sender: 'user@s.whatsapp.net',
+        sender_name: 'User',
+        content: '',
+        timestamp: '2024-04-01T00:00:04.000Z',
+      });
+      store({
+        id: 'f-5',
+        chat_jid: 'filter@g.us',
+        sender: 'user@s.whatsapp.net',
+        sender_name: 'User',
+        content: 'real message 2',
+        timestamp: '2024-04-01T00:00:05.000Z',
+      });
+
+      const { messages, newTimestamp } = getNewMessages(
+        ['filter@g.us'],
+        '2024-04-01T00:00:00.000Z',
+        'Andy',
+        10,
+      );
+      expect(messages.map((m) => m.id)).toEqual(['f-1', 'f-5']);
+      expect(newTimestamp).toBe('2024-04-01T00:00:05.000Z');
+    });
+  });
+});
+
+// --- resolveDrainWindow (equal-timestamp boundary helper) ---
+
+describe('resolveDrainWindow', () => {
+  function row(id: string, timestamp: string) {
+    return {
+      id,
+      chat_jid: 'group@g.us',
+      sender: 'user@s.whatsapp.net',
+      sender_name: 'User',
+      content: `msg ${id}`,
+      timestamp,
+    };
+  }
+
+  it('returns rows unchanged with max timestamp when the window is not full', () => {
+    const rows = [
+      row('a', '2024-01-01T00:00:01.000Z'),
+      row('b', '2024-01-01T00:00:02.000Z'),
+    ];
+    const result = resolveDrainWindow(rows, 5, '2024-01-01T00:00:00.000Z');
+    expect(result.messages).toEqual(rows);
+    expect(result.newTimestamp).toBe('2024-01-01T00:00:02.000Z');
+  });
+
+  it('returns the fallback cursor for an empty window', () => {
+    const result = resolveDrainWindow([], 5, '2024-01-01T00:00:00.000Z');
+    expect(result.messages).toEqual([]);
+    expect(result.newTimestamp).toBe('2024-01-01T00:00:00.000Z');
+  });
+
+  it('keeps a full window intact when the boundary timestamp is unique', () => {
+    const rows = [
+      row('a', '2024-01-01T00:00:01.000Z'),
+      row('b', '2024-01-01T00:00:02.000Z'),
+      row('c', '2024-01-01T00:00:03.000Z'),
+    ];
+    const result = resolveDrainWindow(rows, 3, '2024-01-01T00:00:00.000Z');
+    expect(result.messages).toEqual(rows);
+    expect(result.newTimestamp).toBe('2024-01-01T00:00:03.000Z');
+  });
+
+  it('trims boundary-timestamp rows and holds the cursor below the boundary', () => {
+    const rows = [
+      row('a', '2024-01-01T00:00:01.000Z'),
+      row('b', '2024-01-01T00:00:02.000Z'),
+      row('c1', '2024-01-01T00:00:03.000Z'),
+      row('c2', '2024-01-01T00:00:03.000Z'),
+    ];
+    const result = resolveDrainWindow(rows, 4, '2024-01-01T00:00:00.000Z');
+    expect(result.messages.map((m) => m.id)).toEqual(['a', 'b']);
+    expect(result.newTimestamp).toBe('2024-01-01T00:00:02.000Z');
+  });
+
+  it('keeps a degenerate window where every row shares one timestamp', () => {
+    const rows = [
+      row('a', '2024-01-01T00:00:01.000Z'),
+      row('b', '2024-01-01T00:00:01.000Z'),
+      row('c', '2024-01-01T00:00:01.000Z'),
+    ];
+    const result = resolveDrainWindow(rows, 3, '2024-01-01T00:00:00.000Z');
+    expect(result.messages).toEqual(rows);
+    expect(result.newTimestamp).toBe('2024-01-01T00:00:01.000Z');
+  });
 });
 
 // --- storeChatMetadata ---
@@ -412,7 +654,7 @@ describe('message query LIMIT', () => {
     }
   });
 
-  it('getNewMessages caps to limit and returns most recent in chronological order', () => {
+  it('getNewMessages caps to limit and drains oldest-first with a cursor', () => {
     const { messages, newTimestamp } = getNewMessages(
       ['group@g.us'],
       '2024-01-01T00:00:00.000Z',
@@ -420,12 +662,14 @@ describe('message query LIMIT', () => {
       3,
     );
     expect(messages).toHaveLength(3);
-    expect(messages[0].content).toBe('message 8');
-    expect(messages[2].content).toBe('message 10');
+    // With a non-empty cursor the OLDEST rows come first so the cursor never
+    // advances past unreturned messages.
+    expect(messages[0].content).toBe('message 1');
+    expect(messages[2].content).toBe('message 3');
     // Chronological order preserved
     expect(messages[1].timestamp > messages[0].timestamp).toBe(true);
-    // newTimestamp reflects latest returned row
-    expect(newTimestamp).toBe('2024-01-01T00:00:10.000Z');
+    // newTimestamp reflects the last contiguously drained row
+    expect(newTimestamp).toBe('2024-01-01T00:00:03.000Z');
   });
 
   it('getMessagesSince caps to limit and returns most recent in chronological order', () => {
