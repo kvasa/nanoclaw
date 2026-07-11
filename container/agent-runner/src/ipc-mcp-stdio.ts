@@ -164,9 +164,38 @@ THREADING (Slack only):
   },
 );
 
+// Shared round-trip waiter for edit_message/delete_message: writes the IPC
+// request, then polls INPUT_DIR for `<type>_<requestId>.json` (same pattern
+// as send_message's return_ts wait above) so the host's ok/error response can
+// be surfaced back to the model instead of assumed.
+const ROUND_TRIP_TIMEOUT_MS = 15_000;
+const ROUND_TRIP_POLL_MS = 250;
+
+async function waitForIpcResponse(
+  type: 'edit_message' | 'delete_message',
+  requestId: string,
+): Promise<{ ok: boolean; error?: string } | undefined> {
+  const responseFile = path.join(INPUT_DIR, `${type}_${requestId}.json`);
+  const deadline = Date.now() + ROUND_TRIP_TIMEOUT_MS;
+  while (Date.now() < deadline) {
+    await new Promise((r) => setTimeout(r, ROUND_TRIP_POLL_MS));
+    if (fs.existsSync(responseFile)) {
+      try {
+        const response: { requestId: string; ok: boolean; error?: string } =
+          JSON.parse(fs.readFileSync(responseFile, 'utf-8'));
+        fs.unlinkSync(responseFile);
+        return response;
+      } catch {
+        return undefined;
+      }
+    }
+  }
+  return undefined;
+}
+
 server.tool(
   'edit_message',
-  `Edit (update) a message previously sent by the assistant (Slack only). Pass the message_ts returned by send_message (with return_ts: true). Use this to update an in-place status line such as "last checked …" without posting a new message. Non-Slack channels ignore this.`,
+  `Edit (update) a message previously sent by the assistant (Slack only). Pass the message_ts returned by send_message (with return_ts: true). Use this to update an in-place status line such as "last checked …" without posting a new message. Non-Slack channels ignore this. Waits for host confirmation (up to 15s) — on failure or timeout, treat it as failed and post a replacement with send_message (return_ts: true).`,
   {
     message_ts: z
       .string()
@@ -174,6 +203,7 @@ server.tool(
     text: z.string().describe('The new message text.'),
   },
   async (args) => {
+    const requestId = crypto.randomUUID();
     const data: Record<string, string | undefined> = {
       type: 'edit_message',
       chatJid,
@@ -181,9 +211,34 @@ server.tool(
       text: args.text,
       groupFolder,
       timestamp: new Date().toISOString(),
+      requestId,
     };
 
     writeIpcFile(MESSAGES_DIR, data);
+
+    const response = await waitForIpcResponse('edit_message', requestId);
+
+    if (!response) {
+      return {
+        content: [
+          {
+            type: 'text' as const,
+            text: 'Edit not confirmed by the host within 15s — treat it as failed: verify or post a replacement with send_message (return_ts: true).',
+          },
+        ],
+      };
+    }
+
+    if (!response.ok) {
+      return {
+        content: [
+          {
+            type: 'text' as const,
+            text: `Edit failed: ${response.error}. The message may not belong to this group (e.g. it predates the ownership record) — post a replacement with send_message (return_ts: true) and use the new ts from now on.`,
+          },
+        ],
+      };
+    }
 
     return { content: [{ type: 'text' as const, text: 'Message edited.' }] };
   },
@@ -191,22 +246,48 @@ server.tool(
 
 server.tool(
   'delete_message',
-  `Delete a message previously sent by the assistant (Slack only). Pass the message_ts returned by send_message (with return_ts: true). Use this to remove a stale status message before reposting it so it stays the last message in the channel. Non-Slack channels ignore this.`,
+  `Delete a message previously sent by the assistant (Slack only). Pass the message_ts returned by send_message (with return_ts: true). Use this to remove a stale status message before reposting it so it stays the last message in the channel. Non-Slack channels ignore this. Waits for host confirmation (up to 15s) — on failure or timeout, treat it as failed and post a replacement with send_message (return_ts: true).`,
   {
     message_ts: z
       .string()
       .describe('The ts of the message to delete (from send_message return_ts).'),
   },
   async (args) => {
+    const requestId = crypto.randomUUID();
     const data: Record<string, string | undefined> = {
       type: 'delete_message',
       chatJid,
       messageTs: args.message_ts,
       groupFolder,
       timestamp: new Date().toISOString(),
+      requestId,
     };
 
     writeIpcFile(MESSAGES_DIR, data);
+
+    const response = await waitForIpcResponse('delete_message', requestId);
+
+    if (!response) {
+      return {
+        content: [
+          {
+            type: 'text' as const,
+            text: 'Delete not confirmed by the host within 15s — treat it as failed: verify or post a replacement with send_message (return_ts: true).',
+          },
+        ],
+      };
+    }
+
+    if (!response.ok) {
+      return {
+        content: [
+          {
+            type: 'text' as const,
+            text: `Delete failed: ${response.error}. The message may not belong to this group (e.g. it predates the ownership record) — post a replacement with send_message (return_ts: true) and use the new ts from now on.`,
+          },
+        ],
+      };
+    }
 
     return { content: [{ type: 'text' as const, text: 'Message deleted.' }] };
   },

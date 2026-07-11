@@ -87,12 +87,25 @@ export const IpcEditMessageSchema = z.object({
   chatJid: z.string(),
   messageTs: SlackTs,
   text: z.string(),
+  // When set, the host writes an ok/error response back to a response file
+  // keyed by requestId so the agent-side tool can report failures instead of
+  // silently claiming success.
+  requestId: z
+    .string()
+    .max(128)
+    .regex(/^[a-zA-Z0-9_-]+$/)
+    .optional(),
 });
 
 export const IpcDeleteMessageSchema = z.object({
   type: z.literal('delete_message'),
   chatJid: z.string(),
   messageTs: SlackTs,
+  requestId: z
+    .string()
+    .max(128)
+    .regex(/^[a-zA-Z0-9_-]+$/)
+    .optional(),
 });
 
 export const IpcFileMessageSchema = z.discriminatedUnion('type', [

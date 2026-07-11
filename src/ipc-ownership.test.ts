@@ -283,6 +283,160 @@ describe('edit/delete message ownership', () => {
   });
 });
 
+describe('edit/delete response feedback (round-trip)', () => {
+  function responseFilePath(
+    group: string,
+    type: string,
+    requestId: string,
+  ): string {
+    return path.join(
+      DATA_DIR,
+      'ipc',
+      group,
+      'input',
+      `${type}_${requestId}.json`,
+    );
+  }
+
+  function readResponseFile(
+    group: string,
+    type: string,
+    requestId: string,
+  ): unknown {
+    return JSON.parse(
+      fs.readFileSync(responseFilePath(group, type, requestId), 'utf-8'),
+    );
+  }
+
+  it('a refused edit_message (unowned ts) writes an ok:false response file and does not call editMessage', async () => {
+    const before = editMessage.mock.calls.length;
+    const requestId = 'req-edit-refused-1';
+
+    writeIpcFile('group-a', {
+      type: 'edit_message',
+      chatJid: A_JID,
+      messageTs: '1690000002.111111',
+      text: 'should not apply',
+      requestId,
+    });
+    await runPolls();
+
+    expect(editMessage.mock.calls.length).toBe(before);
+    expect(readResponseFile('group-a', 'edit_message', requestId)).toEqual({
+      requestId,
+      ok: false,
+      error: 'unauthorized: this group did not post this message',
+    });
+  });
+
+  it('a successful edit_message writes an ok:true response file and calls editMessage', async () => {
+    const ts = await postWithTs('group-a', A_JID);
+    const before = editMessage.mock.calls.length;
+    const requestId = 'req-edit-success-1';
+
+    writeIpcFile('group-a', {
+      type: 'edit_message',
+      chatJid: A_JID,
+      messageTs: ts,
+      text: 'updated via round-trip',
+      requestId,
+    });
+    await runPolls();
+
+    expect(editMessage.mock.calls.length).toBe(before + 1);
+    expect(editMessage).toHaveBeenCalledWith(
+      A_JID,
+      ts,
+      'updated via round-trip',
+    );
+    expect(readResponseFile('group-a', 'edit_message', requestId)).toEqual({
+      requestId,
+      ok: true,
+    });
+  });
+
+  it('a channel-level edit_message throw writes an ok:false response file without crashing the watcher', async () => {
+    const ts = await postWithTs('group-a', A_JID);
+    const requestId = 'req-edit-throw-1';
+    editMessage.mockImplementationOnce(async () => {
+      throw new Error('channel exploded');
+    });
+
+    writeIpcFile('group-a', {
+      type: 'edit_message',
+      chatJid: A_JID,
+      messageTs: ts,
+      text: 'will fail',
+      requestId,
+    });
+    await runPolls();
+
+    expect(readResponseFile('group-a', 'edit_message', requestId)).toEqual({
+      requestId,
+      ok: false,
+      error: 'channel exploded',
+    });
+
+    // The watcher must still be alive after the throw: a subsequent valid
+    // edit on the same ts should still succeed normally.
+    const requestId2 = 'req-edit-after-throw-1';
+    writeIpcFile('group-a', {
+      type: 'edit_message',
+      chatJid: A_JID,
+      messageTs: ts,
+      text: 'recovered',
+      requestId: requestId2,
+    });
+    await runPolls();
+
+    expect(readResponseFile('group-a', 'edit_message', requestId2)).toEqual({
+      requestId: requestId2,
+      ok: true,
+    });
+  });
+
+  it('a successful delete_message writes an ok:true response file and calls deleteMessage', async () => {
+    const ts = await postWithTs('group-b', B_JID);
+    const before = deleteMessage.mock.calls.length;
+    const requestId = 'req-delete-success-1';
+
+    writeIpcFile('group-b', {
+      type: 'delete_message',
+      chatJid: B_JID,
+      messageTs: ts,
+      requestId,
+    });
+    await runPolls();
+
+    expect(deleteMessage.mock.calls.length).toBe(before + 1);
+    expect(deleteMessage).toHaveBeenCalledWith(B_JID, ts);
+    expect(readResponseFile('group-b', 'delete_message', requestId)).toEqual({
+      requestId,
+      ok: true,
+    });
+  });
+
+  it('a refused edit_message without requestId writes no response file (legacy compatibility)', async () => {
+    const dir = path.join(DATA_DIR, 'ipc', 'group-a', 'input');
+    const before = fs.existsSync(dir)
+      ? new Set(fs.readdirSync(dir))
+      : new Set<string>();
+
+    writeIpcFile('group-a', {
+      type: 'edit_message',
+      chatJid: A_JID,
+      messageTs: '1690000003.222222',
+      text: 'legacy no requestId',
+    });
+    await runPolls();
+
+    const after = fs.existsSync(dir)
+      ? new Set(fs.readdirSync(dir))
+      : new Set<string>();
+    expect(after).toEqual(before);
+  });
+});
+
 describe('issued-ts tracking bound', () => {
   it('evicts the oldest entry beyond the cap instead of growing forever', () => {
     _recordIssuedTs('group-a', 'bound@s', '1000000000.000000');

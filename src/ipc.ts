@@ -182,6 +182,34 @@ export function startIpcWatcher(deps: IpcDeps): void {
       const messagesDir = path.join(ipcBaseDir, sourceGroup, 'messages');
       const tasksDir = path.join(ipcBaseDir, sourceGroup, 'tasks');
 
+      // Response-file helper shared by edit_message/delete_message (and any
+      // future round-trip type): mirrors the send_message returnTs pattern
+      // above — same path-traversal guard, same `<type>_<requestId>.json`
+      // naming under this group's own input dir.
+      const writeIpcResponse = (
+        type: string,
+        requestId: string,
+        payload: Record<string, unknown>,
+      ) => {
+        const responseDir = path.join(ipcBaseDir, sourceGroup, 'input');
+        fs.mkdirSync(responseDir, { recursive: true });
+        const responseFile = path.join(
+          responseDir,
+          `${type}_${requestId}.json`,
+        );
+        if (responseFile.startsWith(responseDir + path.sep)) {
+          fs.writeFileSync(
+            responseFile,
+            JSON.stringify({ requestId, ...payload }),
+          );
+        } else {
+          logger.warn(
+            { requestId, sourceGroup, type },
+            'IPC response: requestId path traversal blocked',
+          );
+        }
+      };
+
       // Process messages from this group's IPC directory
       try {
         if (fs.existsSync(messagesDir)) {
@@ -360,6 +388,17 @@ export function startIpcWatcher(deps: IpcDeps): void {
                       { chatJid: data.chatJid, sourceGroup, type: data.type },
                       'Unauthorized IPC message attempt blocked',
                     );
+                    if (
+                      (data.type === 'edit_message' ||
+                        data.type === 'delete_message') &&
+                      data.requestId
+                    ) {
+                      writeIpcResponse(data.type, data.requestId, {
+                        ok: false,
+                        error:
+                          'unauthorized: this group cannot modify messages in that chat',
+                      });
+                    }
                   } else if (data.type === 'message') {
                     if (data.returnTs && data.requestId) {
                       // Round-trip: post and write the ts back so the agent
@@ -431,16 +470,42 @@ export function startIpcWatcher(deps: IpcDeps): void {
                         { chatJid: data.chatJid, sourceGroup },
                         'Unauthorized edit_message: group did not post this message',
                       );
+                      if (data.requestId) {
+                        writeIpcResponse('edit_message', data.requestId, {
+                          ok: false,
+                          error:
+                            'unauthorized: this group did not post this message',
+                        });
+                      }
                     } else {
-                      await deps.editMessage?.(
-                        data.chatJid,
-                        data.messageTs,
-                        data.text,
-                      );
-                      logger.info(
-                        { chatJid: data.chatJid, sourceGroup },
-                        'IPC message edited',
-                      );
+                      try {
+                        await deps.editMessage?.(
+                          data.chatJid,
+                          data.messageTs,
+                          data.text,
+                        );
+                        logger.info(
+                          { chatJid: data.chatJid, sourceGroup },
+                          'IPC message edited',
+                        );
+                        if (data.requestId) {
+                          writeIpcResponse('edit_message', data.requestId, {
+                            ok: true,
+                          });
+                        }
+                      } catch (err) {
+                        logger.warn(
+                          { chatJid: data.chatJid, sourceGroup, err },
+                          'IPC edit_message failed',
+                        );
+                        if (data.requestId) {
+                          writeIpcResponse('edit_message', data.requestId, {
+                            ok: false,
+                            error:
+                              err instanceof Error ? err.message : String(err),
+                          });
+                        }
+                      }
                     }
                   } else if (data.type === 'delete_message') {
                     if (
@@ -451,12 +516,41 @@ export function startIpcWatcher(deps: IpcDeps): void {
                         { chatJid: data.chatJid, sourceGroup },
                         'Unauthorized delete_message: group did not post this message',
                       );
+                      if (data.requestId) {
+                        writeIpcResponse('delete_message', data.requestId, {
+                          ok: false,
+                          error:
+                            'unauthorized: this group did not post this message',
+                        });
+                      }
                     } else {
-                      await deps.deleteMessage?.(data.chatJid, data.messageTs);
-                      logger.info(
-                        { chatJid: data.chatJid, sourceGroup },
-                        'IPC message deleted',
-                      );
+                      try {
+                        await deps.deleteMessage?.(
+                          data.chatJid,
+                          data.messageTs,
+                        );
+                        logger.info(
+                          { chatJid: data.chatJid, sourceGroup },
+                          'IPC message deleted',
+                        );
+                        if (data.requestId) {
+                          writeIpcResponse('delete_message', data.requestId, {
+                            ok: true,
+                          });
+                        }
+                      } catch (err) {
+                        logger.warn(
+                          { chatJid: data.chatJid, sourceGroup, err },
+                          'IPC delete_message failed',
+                        );
+                        if (data.requestId) {
+                          writeIpcResponse('delete_message', data.requestId, {
+                            ok: false,
+                            error:
+                              err instanceof Error ? err.message : String(err),
+                          });
+                        }
+                      }
                     }
                   } else if (data.type === 'send_file') {
                     await deps.sendFile(
