@@ -22,6 +22,7 @@ import {
   encryptFile,
   validateBackupPassword,
   resolveSlackChannelId,
+  copyRecursive,
   FORMAT_VERSION,
   MIN_PASSWORD_LENGTH,
 } from './backup.js';
@@ -181,6 +182,48 @@ describe('resolveSlackChannelId', () => {
   });
 });
 
+describe('copyRecursive symlink handling', () => {
+  it('copies regular files but never follows symlinks to files or dirs', () => {
+    const outside = tmp('copyrec-outside');
+    fs.mkdirSync(outside, { recursive: true });
+    fs.writeFileSync(path.join(outside, 'secret.txt'), 'host-only');
+
+    const srcRoot = tmp('copyrec-src');
+    fs.mkdirSync(path.join(srcRoot, 'sub'), { recursive: true });
+    fs.writeFileSync(path.join(srcRoot, 'a.txt'), 'A');
+    fs.writeFileSync(path.join(srcRoot, 'sub', 'b.txt'), 'B');
+    fs.symlinkSync(path.join(outside, 'secret.txt'), path.join(srcRoot, 'evil.txt'));
+    fs.symlinkSync(outside, path.join(srcRoot, 'evildir'));
+
+    const destRoot = tmp('copyrec-dest');
+    const stats = copyRecursive(srcRoot, destRoot);
+
+    expect(fs.readFileSync(path.join(destRoot, 'a.txt'), 'utf-8')).toBe('A');
+    expect(fs.readFileSync(path.join(destRoot, 'sub', 'b.txt'), 'utf-8')).toBe('B');
+    // Neither as file, dir, nor link — lstat must find nothing at all.
+    expect(() => fs.lstatSync(path.join(destRoot, 'evil.txt'))).toThrow();
+    expect(() => fs.lstatSync(path.join(destRoot, 'evildir'))).toThrow();
+    expect(stats.files).toBe(2);
+  });
+
+  it('skips a dangling symlink without throwing', () => {
+    const srcRoot = tmp('copyrec-dangling-src');
+    fs.mkdirSync(srcRoot, { recursive: true });
+    fs.symlinkSync(
+      path.join(srcRoot, 'does-not-exist'),
+      path.join(srcRoot, 'dangling'),
+    );
+
+    const destRoot = tmp('copyrec-dangling-dest');
+    let stats;
+    expect(() => {
+      stats = copyRecursive(srcRoot, destRoot);
+    }).not.toThrow();
+    expect(stats.files).toBe(0);
+    expect(() => fs.lstatSync(path.join(destRoot, 'dangling'))).toThrow();
+  });
+});
+
 describe('assertSafeArchive', () => {
   it('accepts a normal relative archive', () => {
     const dir = tmp('safe-tar');
@@ -214,5 +257,27 @@ describe('assertSafeArchive', () => {
     execFileSync('tar', ['-czPf', tarPath, '-C', inner, '../escape.txt']);
 
     expect(() => assertSafeArchive(tarPath)).toThrow(/unsafe path/);
+  });
+
+  it('rejects an archive containing a symlink member', () => {
+    const dir = tmp('symlink-tar');
+    fs.mkdirSync(dir, { recursive: true });
+    fs.symlinkSync('/tmp', path.join(dir, 'link'));
+    const tarPath = tmp('symlink.tgz');
+    execFileSync('tar', ['-czf', tarPath, 'link'], { cwd: dir });
+
+    expect(() => assertSafeArchive(tarPath)).toThrow(/link member/);
+  });
+
+  it('rejects an archive containing a hardlink member', () => {
+    const dir = tmp('hardlink-tar');
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, 'orig.txt'), 'content');
+    fs.linkSync(path.join(dir, 'orig.txt'), path.join(dir, 'hard.txt'));
+    const tarPath = tmp('hardlink.tgz');
+    // GNU tar stores the second occurrence as a hardlink member
+    execFileSync('tar', ['-czf', tarPath, 'orig.txt', 'hard.txt'], { cwd: dir });
+
+    expect(() => assertSafeArchive(tarPath)).toThrow(/link member/);
   });
 });

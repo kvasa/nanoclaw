@@ -91,9 +91,21 @@ function shouldSkipFile(name, size) {
 }
 
 function copyRecursive(src, dest, stats = { files: 0, bytes: 0 }) {
-  if (!fs.existsSync(src)) return stats;
-
-  const stat = fs.statSync(src);
+  // lstat, never stat: these trees are agent-writable, and a planted symlink
+  // must not pull arbitrary host files into the archive. existsSync follows
+  // links (a dangling symlink reports false), so a try/catch around lstatSync
+  // handles missing paths, dangling symlinks and races in one place.
+  let stat;
+  try {
+    stat = fs.lstatSync(src);
+  } catch (err) {
+    if (err.code === 'ENOENT') return stats;
+    throw err;
+  }
+  if (stat.isSymbolicLink()) {
+    console.log(`  [skip] symlink not followed: ${src}`);
+    return stats;
+  }
   if (stat.isDirectory()) {
     const entries = fs.readdirSync(src);
     for (const entry of entries) {
@@ -111,8 +123,18 @@ function copyRecursive(src, dest, stats = { files: 0, bytes: 0 }) {
 }
 
 function copyFile(src, dest, stats) {
-  if (!fs.existsSync(src)) return;
-  const stat = fs.statSync(src);
+  // Same symlink policy as copyRecursive: lstat and skip links.
+  let stat;
+  try {
+    stat = fs.lstatSync(src);
+  } catch (err) {
+    if (err.code === 'ENOENT') return;
+    throw err;
+  }
+  if (stat.isSymbolicLink()) {
+    console.log(`  [skip] symlink not followed: ${src}`);
+    return;
+  }
   if (stat.size > MAX_FILE_SIZE) return;
   fs.mkdirSync(path.dirname(dest), { recursive: true });
   fs.copyFileSync(src, dest);
@@ -523,6 +545,7 @@ export {
   deriveKey,
   validateBackupPassword,
   resolveSlackChannelId,
+  copyRecursive,
   FORMAT_VERSION,
   MIN_PASSWORD_LENGTH,
   SCRYPT_PARAMS,
