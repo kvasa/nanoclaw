@@ -1,12 +1,12 @@
 # Analýza NanoClaw — architektura, technologie a doporučená zlepšení
 
-> Vzniklo z multi-agentní analýzy kódu (20 agentů: 8 mapovalo subsystémy, 1 prioritizoval, 10 adversariálně ověřovalo nálezy proti reálnému kódu, 1 syntéza). Datum: 2026-06-20. Verze repo: 1.2.12.
+> Vzniklo z multi-agentní analýzy kódu (20 agentů: 8 mapovalo subsystémy, 1 prioritizoval, 10 adversariálně ověřovalo nálezy proti reálnému kódu, 1 syntéza). Datum: 2026-06-20. Shrnutí aktualizováno: 2026-07-12. Verze repo: 1.2.12.
 >
 > Tento dokument je živá reference — při řešení nálezů aktualizuj sloupec **Stav**. Detaily k jednotlivým subsystémům viz [nanoclaw-architecture-final.md](nanoclaw-architecture-final.md), [SPEC.md](SPEC.md), [SECURITY.md](SECURITY.md).
 
 ## Shrnutí
 
-NanoClaw je dobře navržený kompaktní osobní Claude asistent se silnou per-group izolací v Docker/Apple kontejnerech. Jeden Node.js proces přijímá zprávy z více kanálů, ukládá je do SQLite, polluje je a každou skupinu obsluhuje v izolovaném kontejneru s Claude Agent SDK. Kód je zralý a slušně otestovaný (~16 400 řádků v `src`, rozsáhlé testy). Hlavní rezervy jsou: **chybějící resource limity kontejnerů**, **neladěná SQLite** (WAL, indexy), **závodní podmínky v IPC a API serveru** a **slabá CI/test disciplína** (73 z 75 Slack testů padá, CI běží jen na PR).
+NanoClaw je dobře navržený kompaktní osobní Claude asistent se silnou per-group izolací v Docker/Apple kontejnerech. Jeden Node.js proces přijímá zprávy z více kanálů, ukládá je do SQLite, polluje je a každou skupinu obsluhuje v izolovaném kontejneru s Claude Agent SDK. Kód je zralý a slušně otestovaný (~16 400 řádků v `src`, rozsáhlé testy). Hlavní rezervy z první analýzy (resource limity kontejnerů, neladěná SQLite, závodní podmínky v IPC a API serveru, rozbité Slack testy, CI pouze na PR) byly vyřešeny — viz tabulka níže a `plans/README.md` (kola 001–012 a 013–024). Aktuální známé resty eviduje sekce „Deferred“ v `plans/README.md`.
 
 ## Technologický stack
 
