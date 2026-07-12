@@ -83,8 +83,11 @@ function loadSecrets(key) {
   if (!fs.existsSync(SECRETS_FILE)) return {};
   try {
     return JSON.parse(decrypt(fs.readFileSync(SECRETS_FILE, 'utf-8'), key));
-  } catch {
-    return {};
+  } catch (err) {
+    console.error(`\n❌  ${SECRETS_FILE} exists but cannot be decrypted (${err.message}).`);
+    console.error('   Refusing to continue — writing now would destroy the stored secrets.');
+    console.error('   Check that master.key matches, or delete both files to start over.\n');
+    process.exit(1);
   }
 }
 

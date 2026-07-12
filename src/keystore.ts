@@ -16,9 +16,19 @@ import fs from 'fs';
 import os from 'os';
 import path from 'path';
 
-const CONFIG_DIR = path.join(os.homedir(), '.config', 'nanoclaw');
-const MASTER_KEY_FILE = path.join(CONFIG_DIR, 'master.key');
-const SECRETS_FILE = path.join(CONFIG_DIR, 'secrets.enc');
+/** @internal — overridable for tests via NANOCLAW_KEYSTORE_DIR. */
+function configDir(): string {
+  return (
+    process.env.NANOCLAW_KEYSTORE_DIR ??
+    path.join(os.homedir(), '.config', 'nanoclaw')
+  );
+}
+function masterKeyFile(): string {
+  return path.join(configDir(), 'master.key');
+}
+function secretsFile(): string {
+  return path.join(configDir(), 'secrets.enc');
+}
 const ALGORITHM = 'aes-256-gcm';
 
 /**
@@ -41,12 +51,12 @@ export const KEYSTORE_KEYS = new Set([
 
 /** Returns true if the encrypted store is initialised (master key exists). */
 export function isKeystoreAvailable(): boolean {
-  return fs.existsSync(MASTER_KEY_FILE);
+  return fs.existsSync(masterKeyFile());
 }
 
 function loadMasterKey(): Buffer | null {
   try {
-    const key = fs.readFileSync(MASTER_KEY_FILE);
+    const key = fs.readFileSync(masterKeyFile());
     return key.length === 32 ? key : null;
   } catch {
     return null;
@@ -55,8 +65,8 @@ function loadMasterKey(): Buffer | null {
 
 function generateMasterKey(): Buffer {
   const key = crypto.randomBytes(32);
-  fs.mkdirSync(CONFIG_DIR, { recursive: true });
-  fs.writeFileSync(MASTER_KEY_FILE, key, { mode: 0o600 });
+  fs.mkdirSync(configDir(), { recursive: true });
+  fs.writeFileSync(masterKeyFile(), key, { mode: 0o600 });
   return key;
 }
 
@@ -95,28 +105,48 @@ function decrypt(ciphertext: string, key: Buffer): string {
   ]).toString('utf-8');
 }
 
+/**
+ * Load the decrypted secrets map. A missing store file means an empty map;
+ * any OTHER failure (corrupted file, wrong/rotated master key) throws —
+ * callers on the write path must never treat an unreadable store as empty,
+ * or a single setSecret() would wipe every other stored credential.
+ */
 function loadSecrets(key: Buffer): Record<string, string> {
+  let content: string;
   try {
-    const content = fs.readFileSync(SECRETS_FILE, 'utf-8');
-    return JSON.parse(decrypt(content, key)) as Record<string, string>;
-  } catch {
-    return {};
+    content = fs.readFileSync(secretsFile(), 'utf-8');
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return {};
+    throw err;
   }
+  return JSON.parse(decrypt(content, key)) as Record<string, string>;
 }
 
 function saveSecrets(secrets: Record<string, string>, key: Buffer): void {
-  fs.mkdirSync(CONFIG_DIR, { recursive: true });
-  fs.writeFileSync(SECRETS_FILE, encrypt(JSON.stringify(secrets), key), {
+  fs.mkdirSync(configDir(), { recursive: true });
+  fs.writeFileSync(secretsFile(), encrypt(JSON.stringify(secrets), key), {
     mode: 0o600,
   });
 }
+
+let warnedUnreadable = false;
 
 /** Read a single secret from the encrypted store. Returns null if not found. */
 export function getSecret(secretKey: string): string | null {
   const masterKey = loadMasterKey();
   if (!masterKey) return null;
-  const secrets = loadSecrets(masterKey);
-  return secrets[secretKey] ?? null;
+  try {
+    const secrets = loadSecrets(masterKey);
+    return secrets[secretKey] ?? null;
+  } catch {
+    if (!warnedUnreadable) {
+      warnedUnreadable = true;
+      console.error(
+        '[nanoclaw] WARN: keystore exists but cannot be decrypted — falling back to .env (check master.key)',
+      );
+    }
+    return null;
+  }
 }
 
 /** Write a secret to the encrypted store (creates master key on first use). */
@@ -128,17 +158,27 @@ export function setSecret(secretKey: string, value: string): boolean {
     saveSecrets(secrets, masterKey);
     return true;
   } catch {
+    console.error(
+      '[nanoclaw] ERROR: refusing to write keystore: existing secrets.enc cannot be decrypted',
+    );
     return false;
   }
 }
 
 /** Remove a secret from the encrypted store. */
 export function deleteSecret(secretKey: string): boolean {
-  const masterKey = loadMasterKey();
-  if (!masterKey) return false;
-  const secrets = loadSecrets(masterKey);
-  if (!(secretKey in secrets)) return false;
-  delete secrets[secretKey];
-  saveSecrets(secrets, masterKey);
-  return true;
+  try {
+    const masterKey = loadMasterKey();
+    if (!masterKey) return false;
+    const secrets = loadSecrets(masterKey);
+    if (!(secretKey in secrets)) return false;
+    delete secrets[secretKey];
+    saveSecrets(secrets, masterKey);
+    return true;
+  } catch {
+    console.error(
+      '[nanoclaw] ERROR: refusing to write keystore: existing secrets.enc cannot be decrypted',
+    );
+    return false;
+  }
 }
