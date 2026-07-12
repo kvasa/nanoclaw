@@ -268,32 +268,52 @@ function timestamp() {
   return new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
 }
 
-// Delete encrypted backups older than RETENTION_DAYS. Best-effort:
-// a failure to remove one stale file must never fail the backup run.
-function pruneOldBackups() {
-  if (!fs.existsSync(BACKUPS_DIR)) return;
-  const cutoff = Date.now() - RETENTION_DAYS * 24 * 60 * 60 * 1000;
+// Delete encrypted backups older than RETENTION_DAYS, and sweep orphaned
+// `.tmp` partials left behind by a crashed run (see encTempPath below).
+// Best-effort: a failure to remove one stale file must never fail the
+// backup run. This is the single retention owner for backups/ — cleanup.js
+// no longer touches it.
+const TMP_PARTIAL_MAX_AGE_MS = 24 * 60 * 60 * 1000; // 1 day
+const TMP_PARTIAL_RE = /^\..*\.tmp$/;
+
+function pruneOldBackups(dir = BACKUPS_DIR) {
+  if (!fs.existsSync(dir)) return;
+  const encCutoff = Date.now() - RETENTION_DAYS * 24 * 60 * 60 * 1000;
+  const tmpCutoff = Date.now() - TMP_PARTIAL_MAX_AGE_MS;
   let removed = 0;
   let freed = 0;
-  for (const name of fs.readdirSync(BACKUPS_DIR)) {
-    if (!name.endsWith('.enc')) continue;
-    const filePath = path.join(BACKUPS_DIR, name);
+  let removedPartials = 0;
+  for (const name of fs.readdirSync(dir)) {
+    const isEnc = name.endsWith('.enc');
+    const isTmpPartial = TMP_PARTIAL_RE.test(name);
+    if (!isEnc && !isTmpPartial) continue;
+    const filePath = path.join(dir, name);
     try {
       const st = fs.statSync(filePath);
-      if (st.mtimeMs >= cutoff) continue;
-      fs.unlinkSync(filePath);
-      removed++;
-      freed += st.size;
+      if (isEnc) {
+        if (st.mtimeMs >= encCutoff) continue;
+        fs.unlinkSync(filePath);
+        removed++;
+        freed += st.size;
+      } else {
+        // A partial younger than the cutoff may belong to a concurrently
+        // running backup — leave it alone.
+        if (st.mtimeMs >= tmpCutoff) continue;
+        fs.unlinkSync(filePath);
+        removedPartials++;
+        freed += st.size;
+        console.log(`  pruned stale partial: ${name}`);
+      }
     } catch (err) {
       console.log(`  [warn] could not prune ${name}: ${err.message}`);
     }
   }
-  if (removed > 0) {
+  if (removed > 0 || removedPartials > 0) {
     console.log(
-      `  Pruned ${removed} backup(s) older than ${RETENTION_DAYS} days (freed ${formatBytes(freed)})`
+      `  Pruned ${removed} backup(s) older than ${RETENTION_DAYS} days and ${removedPartials} stale partial(s) (freed ${formatBytes(freed)})`
     );
   } else {
-    console.log(`  No backups older than ${RETENTION_DAYS} days to prune`);
+    console.log(`  No backups older than ${RETENTION_DAYS} days or stale partials to prune`);
   }
 }
 
@@ -546,6 +566,7 @@ export {
   validateBackupPassword,
   resolveSlackChannelId,
   copyRecursive,
+  pruneOldBackups,
   FORMAT_VERSION,
   MIN_PASSWORD_LENGTH,
   SCRYPT_PARAMS,

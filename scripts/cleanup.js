@@ -93,39 +93,6 @@ function cleanContainerLogs() {
   if (count === 0) console.log(`  [skip] no logs older than ${MAX_AGE_DAYS} days`);
 }
 
-// ── 2. Old backups (backups/) ───────────────────────────────────────
-
-function cleanOldBackups() {
-  const backupsDir = path.join(PROJECT_ROOT, 'backups');
-  if (!fs.existsSync(backupsDir)) { console.log('  [skip] backups/ not found'); return; }
-
-  const cutoff = Date.now() - MAX_AGE_MS;
-  const backupRe = /^nanoclaw-backup-(\d{4}-\d{2}-\d{2})T/;
-
-  const backups = fs.readdirSync(backupsDir)
-    .filter(f => backupRe.test(f))
-    .map(f => {
-      const match = backupRe.exec(f);
-      return { name: f, date: new Date(match[1]).getTime() };
-    })
-    .sort((a, b) => b.date - a.date); // newest first
-
-  if (backups.length === 0) { console.log('  [skip] no backups found'); return; }
-
-  // Always keep at least 1 backup
-  console.log(`  [keep] ${backups[0].name} (newest, always kept)`);
-  let count = 0;
-
-  for (let i = 1; i < backups.length; i++) {
-    if (backups[i].date < cutoff) {
-      safeDelete(path.join(backupsDir, backups[i].name));
-      count++;
-    }
-  }
-
-  if (count === 0) console.log(`  [skip] no backups older than ${MAX_AGE_DAYS} days`);
-}
-
 // ── 3. Docker cache ─────────────────────────────────────────────────
 
 function cleanDockerCache() {
@@ -299,7 +266,7 @@ function main() {
   cleanContainerLogs();
 
   console.log('\n2. Old backups (backups/)...');
-  cleanOldBackups();
+  console.log('backups/: retention handled by backup.js (7 days, after each successful backup)');
 
   console.log('\n3. Docker cache...');
   cleanDockerCache();

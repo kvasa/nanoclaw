@@ -23,6 +23,7 @@ import {
   validateBackupPassword,
   resolveSlackChannelId,
   copyRecursive,
+  pruneOldBackups,
   FORMAT_VERSION,
   MIN_PASSWORD_LENGTH,
 } from './backup.js';
@@ -221,6 +222,45 @@ describe('copyRecursive symlink handling', () => {
     }).not.toThrow();
     expect(stats.files).toBe(0);
     expect(() => fs.lstatSync(path.join(destRoot, 'dangling'))).toThrow();
+  });
+});
+
+describe('pruneOldBackups', () => {
+  const DAY_MS = 24 * 60 * 60 * 1000;
+  const HOUR_MS = 60 * 60 * 1000;
+
+  function setMtime(filePath, ageMs) {
+    const t = new Date(Date.now() - ageMs);
+    fs.utimesSync(filePath, t, t);
+  }
+
+  it('deletes .enc backups older than 7 days and stale .tmp partials older than 1 day, keeps everything else', () => {
+    const dir = tmp(`prune-${crypto.randomBytes(4).toString('hex')}`);
+    fs.mkdirSync(dir, { recursive: true });
+
+    const oldEnc = path.join(dir, 'nanoclaw-backup-old.tar.gz.enc');
+    const newEnc = path.join(dir, 'nanoclaw-backup-new.tar.gz.enc');
+    const oldTmp = path.join(dir, '.nanoclaw-backup-x.tar.gz.enc.tmp');
+    const freshTmp = path.join(dir, '.nanoclaw-backup-y.tar.gz.enc.tmp');
+    const readme = path.join(dir, 'README.txt');
+
+    for (const f of [oldEnc, newEnc, oldTmp, freshTmp, readme]) {
+      fs.writeFileSync(f, 'x');
+    }
+
+    setMtime(oldEnc, 8 * DAY_MS);
+    setMtime(newEnc, 1 * DAY_MS);
+    setMtime(oldTmp, 2 * DAY_MS);
+    setMtime(freshTmp, 1 * HOUR_MS);
+    setMtime(readme, 8 * DAY_MS);
+
+    pruneOldBackups(dir);
+
+    expect(fs.existsSync(oldEnc)).toBe(false);
+    expect(fs.existsSync(newEnc)).toBe(true);
+    expect(fs.existsSync(oldTmp)).toBe(false);
+    expect(fs.existsSync(freshTmp)).toBe(true);
+    expect(fs.existsSync(readme)).toBe(true);
   });
 });
 
