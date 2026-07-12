@@ -13,24 +13,15 @@
  *   npm run e2e                             # all tests: check, prime, search
  *   node scripts/e2e-api.mjs --only=check   # health check only
  */
-import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
+
+import { readEnvValues } from '../backup/lib/env.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const QUERY_TIMEOUT_MS = 5 * 60 * 1000;
 
-function loadEnv() {
-  const env = {};
-  const raw = fs.readFileSync(path.join(ROOT, '.env'), 'utf8');
-  for (const line of raw.split('\n')) {
-    const m = line.match(/^([A-Z_]+)=(.*)$/);
-    if (m) env[m[1]] = m[2].replace(/^"|"$/g, '');
-  }
-  return env;
-}
-
-const env = loadEnv();
+const env = readEnvValues(path.join(ROOT, '.env'));
 const PORT = env.API_PORT || '3002';
 const TOKEN = env.API_TOKEN;
 const BASE = `http://127.0.0.1:${PORT}`;

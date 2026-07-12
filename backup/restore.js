@@ -9,19 +9,12 @@ import os from 'node:os';
 import readline from 'node:readline';
 import { pathToFileURL } from 'node:url';
 
+import { readEnvValues } from './lib/env.js';
+import { PBKDF2_ITERATIONS, SCRYPT_PARAMS, parseHeader } from './lib/format.js';
+
 // Constants (must match backup.js)
 const PROJECT_ROOT = path.resolve(import.meta.dirname, '..');
 const BACKUPS_DIR = path.join(PROJECT_ROOT, 'backups');
-const MAGIC = Buffer.from('NCBK');
-// KDF history, dispatched on the header version byte:
-//   1 = PBKDF2-SHA512, 100k iterations (backups written before 2026-07-11)
-//   2 = scrypt N=2^17, r=8, p=1
-// The v1 path must NOT be deleted while any v1 archive might still exist —
-// removing it silently makes every old backup unrestorable, and you find
-// out at the worst possible moment.
-const PBKDF2_ITERATIONS = 100_000;
-const SCRYPT_PARAMS = { N: 2 ** 17, r: 8, p: 1, maxmem: 256 * 1024 * 1024 };
-const HEADER_SIZE = 53; // MAGIC(4) + VERSION(1) + SALT(16) + IV(16) + AUTH_TAG(16)
 
 const CRITICAL_FILES = [
   'store/messages.db',
@@ -29,35 +22,8 @@ const CRITICAL_FILES = [
   'store/auth',
 ];
 
-// ── .env parser (port of src/env.ts) ────────────────────────────────
-
 function readEnvFile(keys) {
-  const envPath = path.join(PROJECT_ROOT, '.env');
-  let content;
-  try {
-    content = fs.readFileSync(envPath, 'utf-8');
-  } catch {
-    return {};
-  }
-  const wanted = new Set(keys);
-  const result = {};
-  for (const line of content.split('\n')) {
-    const trimmed = line.trim();
-    if (!trimmed || trimmed.startsWith('#')) continue;
-    const eqIdx = trimmed.indexOf('=');
-    if (eqIdx === -1) continue;
-    const key = trimmed.slice(0, eqIdx).trim();
-    if (!wanted.has(key)) continue;
-    let value = trimmed.slice(eqIdx + 1).trim();
-    if (
-      (value.startsWith('"') && value.endsWith('"')) ||
-      (value.startsWith("'") && value.endsWith("'"))
-    ) {
-      value = value.slice(1, -1);
-    }
-    if (value) result[key] = value;
-  }
-  return result;
+  return readEnvValues(path.join(PROJECT_ROOT, '.env'), keys);
 }
 
 // ── Password acquisition ────────────────────────────────────────────
@@ -85,21 +51,8 @@ async function getPassword() {
 function decryptFile(inputPath, outputPath, password) {
   const data = fs.readFileSync(inputPath);
 
-  if (data.length < HEADER_SIZE) {
-    throw new Error('File too small to be a valid backup.');
-  }
-
-  // Verify magic bytes
-  if (!data.subarray(0, 4).equals(MAGIC)) {
-    throw new Error('Not a valid NanoClaw backup file (bad magic bytes).');
-  }
-
-  const version = data.readUInt8(4);
-
-  const salt = data.subarray(5, 21);
-  const iv = data.subarray(21, 37);
-  const authTag = data.subarray(37, 53);
-  const encrypted = data.subarray(53);
+  const { version, salt, iv, authTag, payloadOffset } = parseHeader(data);
+  const encrypted = data.subarray(payloadOffset);
 
   let key;
   if (version === 1) {

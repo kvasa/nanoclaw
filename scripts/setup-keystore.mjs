@@ -20,6 +20,8 @@ import path from 'path';
 import readline from 'readline';
 import { fileURLToPath } from 'url';
 
+import { parseEnv } from '../backup/lib/env.js';
+
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ENV_FILE = path.join(__dirname, '..', '.env');
 const CONFIG_DIR = path.join(os.homedir(), '.config', 'nanoclaw');
@@ -97,26 +99,6 @@ function saveSecrets(secrets, key) {
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
-
-function parseEnv(content) {
-  const result = {};
-  for (const line of content.split('\n')) {
-    const trimmed = line.trim();
-    if (!trimmed || trimmed.startsWith('#')) continue;
-    const eqIdx = trimmed.indexOf('=');
-    if (eqIdx === -1) continue;
-    const key = trimmed.slice(0, eqIdx).trim();
-    let value = trimmed.slice(eqIdx + 1).trim();
-    if (
-      (value.startsWith('"') && value.endsWith('"')) ||
-      (value.startsWith("'") && value.endsWith("'"))
-    ) {
-      value = value.slice(1, -1);
-    }
-    if (value) result[key] = value;
-  }
-  return result;
-}
 
 function redactEnv(content, migratedKeys) {
   return content

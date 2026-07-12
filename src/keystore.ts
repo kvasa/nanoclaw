@@ -76,6 +76,16 @@ interface Envelope {
   data: string;
 }
 
+/** @internal — for tests only (contract test pinning the envelope shape). */
+export function _encrypt(plaintext: string, key: Buffer): string {
+  return encrypt(plaintext, key);
+}
+
+/** @internal — for tests only (contract test pinning the envelope shape). */
+export function _decrypt(ciphertext: string, key: Buffer): string {
+  return decrypt(ciphertext, key);
+}
+
 function encrypt(plaintext: string, key: Buffer): string {
   const iv = crypto.randomBytes(12); // 96-bit IV recommended for GCM
   const cipher = crypto.createCipheriv(ALGORITHM, key, iv);

@@ -24,10 +24,15 @@ import {
   resolveSlackChannelId,
   copyRecursive,
   pruneOldBackups,
-  FORMAT_VERSION,
-  MIN_PASSWORD_LENGTH,
 } from './backup.js';
 import { decryptFile, assertSafeArchive } from './restore.js';
+import {
+  FORMAT_VERSION,
+  MIN_PASSWORD_LENGTH,
+  HEADER_SIZE,
+  buildHeader,
+  parseHeader,
+} from './lib/format.js';
 
 const MAGIC = Buffer.from('NCBK');
 const PBKDF2_ITERATIONS = 100_000;
@@ -75,10 +80,20 @@ describe('backup encryption round-trip', () => {
 
     encryptFile(plain, enc, password);
 
-    const header = fs.readFileSync(enc).subarray(0, 5);
+    const encBytes = fs.readFileSync(enc);
+    const header = encBytes.subarray(0, 5);
     expect(header.subarray(0, 4).equals(MAGIC)).toBe(true);
     expect(header.readUInt8(4)).toBe(FORMAT_VERSION);
     expect(FORMAT_VERSION).toBe(2);
+    // Byte-compat pin: first 5 bytes are NCBK + version 2, header is
+    // exactly 53 bytes (MAGIC(4)+VERSION(1)+SALT(16)+IV(16)+TAG(16)).
+    expect(encBytes.subarray(0, 5).toString('hex')).toBe(
+      Buffer.concat([MAGIC, Buffer.from([2])]).toString('hex'),
+    );
+    expect(HEADER_SIZE).toBe(53);
+    // Encrypted payload length equals plaintext length (AES-GCM is a stream
+    // cipher — no padding; the 16-byte auth tag lives inside the header).
+    expect(encBytes.length - HEADER_SIZE).toBe(content.length);
 
     decryptFile(enc, out, password);
     expect(fs.readFileSync(out).equals(content)).toBe(true);
@@ -124,6 +139,34 @@ describe('backup encryption round-trip', () => {
     expect(() => decryptFile(enc, tmp('out-v9.bin'), password)).toThrow(
       /Unsupported backup format version: 9/,
     );
+  });
+});
+
+describe('buildHeader / parseHeader round-trip', () => {
+  it('round-trips a random salt/iv/tag and reports the right offsets', () => {
+    const salt = crypto.randomBytes(16);
+    const iv = crypto.randomBytes(16);
+    const authTag = crypto.randomBytes(16);
+
+    const header = buildHeader(2, salt, iv, authTag);
+    expect(header.length).toBe(HEADER_SIZE);
+
+    const parsed = parseHeader(header);
+    expect(parsed.version).toBe(2);
+    expect(Buffer.from(parsed.salt).equals(salt)).toBe(true);
+    expect(Buffer.from(parsed.iv).equals(iv)).toBe(true);
+    expect(Buffer.from(parsed.authTag).equals(authTag)).toBe(true);
+    expect(parsed.payloadOffset).toBe(53);
+  });
+
+  it('rejects a buffer smaller than the header', () => {
+    expect(() => parseHeader(Buffer.alloc(10))).toThrow(/too small/i);
+  });
+
+  it('rejects a buffer with the wrong magic bytes', () => {
+    const bad = Buffer.alloc(HEADER_SIZE);
+    bad.write('XXXX', 0);
+    expect(() => parseHeader(bad)).toThrow(/bad magic bytes/i);
   });
 });
 

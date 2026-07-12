@@ -9,20 +9,17 @@ import os from 'node:os';
 import { createRequire } from 'node:module';
 import { pathToFileURL } from 'node:url';
 
+import { readEnvValues } from './lib/env.js';
+import {
+  FORMAT_VERSION,
+  SCRYPT_PARAMS,
+  MIN_PASSWORD_LENGTH,
+  buildHeader,
+} from './lib/format.js';
+
 // Constants
 const PROJECT_ROOT = path.resolve(import.meta.dirname, '..');
 const BACKUPS_DIR = path.join(PROJECT_ROOT, 'backups');
-const MAGIC = Buffer.from('NCBK');
-// Version 2 = scrypt KDF. Version 1 (PBKDF2) is still restorable via
-// restore.js, which dispatches on this header byte.
-const FORMAT_VERSION = 2;
-// scrypt parameters for new backups. The archive leaves the host (Slack), so
-// the KDF must make offline guessing expensive. 128*N*r bytes of memory are
-// needed; maxmem must sit above that or scryptSync throws.
-const SCRYPT_PARAMS = { N: 2 ** 17, r: 8, p: 1, maxmem: 256 * 1024 * 1024 };
-// The password is the only thing between an offline attacker and every
-// credential in the archive — refuse to encrypt with a weak one.
-const MIN_PASSWORD_LENGTH = 16;
 const MAX_FILE_SIZE = 50 * 1024 * 1024; // 50MB
 const RETENTION_DAYS = 7; // Delete encrypted backups older than this
 
@@ -48,35 +45,8 @@ const SKIP_FILE_PATTERNS = [
   /\.pdf$/i,         // PDF documents
 ];
 
-// ── .env parser (port of src/env.ts) ────────────────────────────────
-
 function readEnvFile(keys) {
-  const envPath = path.join(PROJECT_ROOT, '.env');
-  let content;
-  try {
-    content = fs.readFileSync(envPath, 'utf-8');
-  } catch {
-    return {};
-  }
-  const wanted = new Set(keys);
-  const result = {};
-  for (const line of content.split('\n')) {
-    const trimmed = line.trim();
-    if (!trimmed || trimmed.startsWith('#')) continue;
-    const eqIdx = trimmed.indexOf('=');
-    if (eqIdx === -1) continue;
-    const key = trimmed.slice(0, eqIdx).trim();
-    if (!wanted.has(key)) continue;
-    let value = trimmed.slice(eqIdx + 1).trim();
-    if (
-      (value.startsWith('"') && value.endsWith('"')) ||
-      (value.startsWith("'") && value.endsWith("'"))
-    ) {
-      value = value.slice(1, -1);
-    }
-    if (value) result[key] = value;
-  }
-  return result;
+  return readEnvValues(path.join(PROJECT_ROOT, '.env'), keys);
 }
 
 // ── File collection ─────────────────────────────────────────────────
@@ -245,13 +215,7 @@ function encryptFile(inputPath, outputPath, password) {
   const encrypted = Buffer.concat([cipher.update(plaintext), cipher.final()]);
   const authTag = cipher.getAuthTag();
 
-  // Header: MAGIC(4) + VERSION(1) + SALT(16) + IV(16) + AUTH_TAG(16) = 53 bytes
-  const header = Buffer.alloc(53);
-  MAGIC.copy(header, 0);
-  header.writeUInt8(FORMAT_VERSION, 4);
-  salt.copy(header, 5);
-  iv.copy(header, 21);
-  authTag.copy(header, 37);
+  const header = buildHeader(FORMAT_VERSION, salt, iv, authTag);
 
   fs.writeFileSync(outputPath, Buffer.concat([header, encrypted]));
 }
@@ -567,9 +531,6 @@ export {
   resolveSlackChannelId,
   copyRecursive,
   pruneOldBackups,
-  FORMAT_VERSION,
-  MIN_PASSWORD_LENGTH,
-  SCRYPT_PARAMS,
 };
 
 const isDirectRun =
