@@ -165,8 +165,9 @@ function resolveBackupPath(arg) {
 
 // Authenticated decryption proves the archive was encrypted with our
 // password; it proves nothing about the paths inside it. Refuse to extract
-// any member that is absolute or contains a `..` segment, so a tampered or
-// corrupted archive cannot write outside PROJECT_ROOT.
+// any member that is absolute, contains a `..` segment, or is a symlink or
+// hardlink member, so a tampered or corrupted archive cannot write outside
+// PROJECT_ROOT.
 function assertSafeArchive(tarPath) {
   const listing = execFileSync('tar', ['-tzf', tarPath], {
     encoding: 'utf-8',
@@ -177,6 +178,24 @@ function assertSafeArchive(tarPath) {
     if (member.startsWith('/') || /(^|\/)\.\.(\/|$)/.test(member)) {
       throw new Error(
         `Refusing to extract: archive member has an unsafe path: ${member}`
+      );
+    }
+  }
+
+  // Member TYPE check: `tar -tvzf` prefixes each line with the mode string;
+  // first char 'l' = symlink, 'h'/'link to' = hardlink. A symlink member
+  // followed by a member that writes through it would escape PROJECT_ROOT
+  // even though every NAME above passed. Backups never contain links
+  // (backup.js skips them), so any link member means a tampered archive.
+  const verbose = execFileSync('tar', ['-tvzf', tarPath], {
+    encoding: 'utf-8',
+    maxBuffer: 64 * 1024 * 1024,
+  });
+  for (const line of verbose.split('\n')) {
+    if (!line) continue;
+    if (line[0] === 'l' || line[0] === 'h' || line.includes(' link to ')) {
+      throw new Error(
+        `Refusing to extract: archive contains a link member: ${line}`
       );
     }
   }
