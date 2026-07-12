@@ -10,6 +10,7 @@ import { createRequire } from 'node:module';
 import { pathToFileURL } from 'node:url';
 
 import { readEnvValues } from './lib/env.js';
+import { getKeystoreSecret } from './lib/keystore.js';
 import {
   FORMAT_VERSION,
   SCRYPT_PARAMS,
@@ -353,13 +354,19 @@ async function main() {
   console.log('NanoClaw Backup\n');
 
   // 1. Read and validate password — refuse to produce a weakly-protected
-  // archive rather than upload one to a third party.
+  // archive rather than upload one to a third party. Keystore first (see
+  // scripts/setup-keystore.mjs), then .env, then a raw environment variable.
   const env = readEnvFile(['BACKUP_PASSWORD']);
-  const password = env.BACKUP_PASSWORD || process.env.BACKUP_PASSWORD;
+  const password =
+    getKeystoreSecret('BACKUP_PASSWORD') ||
+    env.BACKUP_PASSWORD ||
+    process.env.BACKUP_PASSWORD;
   const passwordProblem = validateBackupPassword(password);
   if (passwordProblem) {
     console.error(`Error: ${passwordProblem}`);
-    console.error('Set a strong BACKUP_PASSWORD in .env and try again.');
+    console.error(
+      'Set BACKUP_PASSWORD via scripts/setup-keystore.mjs (or .env) and try again.',
+    );
     process.exit(1);
   }
 

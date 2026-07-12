@@ -10,6 +10,7 @@ import readline from 'node:readline';
 import { pathToFileURL } from 'node:url';
 
 import { readEnvValues } from './lib/env.js';
+import { getKeystoreSecret } from './lib/keystore.js';
 import { PBKDF2_ITERATIONS, SCRYPT_PARAMS, parseHeader } from './lib/format.js';
 
 // Constants (must match backup.js)
@@ -29,14 +30,18 @@ function readEnvFile(keys) {
 // ── Password acquisition ────────────────────────────────────────────
 
 async function getPassword() {
-  // 1. Try .env
+  // 1. Try the keystore (see scripts/setup-keystore.mjs)
+  const fromKeystore = getKeystoreSecret('BACKUP_PASSWORD');
+  if (fromKeystore) return fromKeystore;
+
+  // 2. Try .env
   const env = readEnvFile(['BACKUP_PASSWORD']);
   if (env.BACKUP_PASSWORD) return env.BACKUP_PASSWORD;
 
-  // 2. Try environment variable
+  // 3. Try environment variable
   if (process.env.BACKUP_PASSWORD) return process.env.BACKUP_PASSWORD;
 
-  // 3. Interactive prompt
+  // 4. Interactive prompt
   const rl = readline.createInterface({ input: process.stdin, output: process.stderr });
   return new Promise((resolve) => {
     rl.question('Enter backup password: ', (answer) => {

@@ -15,6 +15,7 @@ import { describe, expect, it, vi, afterEach, beforeEach } from 'vitest';
 import { _resetEnvWarnings, readEnvFile } from './env.js';
 import { _encrypt, _decrypt } from './keystore.js';
 import { parseEnv as sharedParseEnv } from '../backup/lib/env.js';
+import { getKeystoreSecret } from '../backup/lib/keystore.js';
 
 vi.mock('./keystore.js', async () => {
   const actual =
@@ -119,4 +120,37 @@ describe('keystore envelope shape contract', () => {
   // shape is pinned only by this shape assertion on the TS side plus the
   // "must match" cross-comments between the two files; see plan 030
   // Maintenance notes.
+});
+
+describe('keystore cross-implementation contract: src/keystore.ts writer vs backup/lib/keystore.js reader', () => {
+  let tmpDir: string;
+  let originalEnv: string | undefined;
+
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(
+      path.join(os.tmpdir(), 'nanoclaw-keystore-contract-'),
+    );
+    originalEnv = process.env.NANOCLAW_KEYSTORE_DIR;
+    process.env.NANOCLAW_KEYSTORE_DIR = tmpDir;
+  });
+
+  afterEach(() => {
+    if (originalEnv === undefined) {
+      delete process.env.NANOCLAW_KEYSTORE_DIR;
+    } else {
+      process.env.NANOCLAW_KEYSTORE_DIR = originalEnv;
+    }
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it('backup/lib/keystore.js reads a value written by src/keystore.ts setSecret', async () => {
+    const keystore = await import('./keystore.js');
+
+    expect(keystore.setSecret('BACKUP_PASSWORD', 'contract-test-value')).toBe(
+      true,
+    );
+
+    expect(getKeystoreSecret('BACKUP_PASSWORD')).toBe('contract-test-value');
+    expect(getKeystoreSecret('NOT_A_REAL_KEY')).toBeNull();
+  });
 });
