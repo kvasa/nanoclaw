@@ -36,3 +36,6 @@ agents-sdk-docs
 
 # Backups
 backups/
+
+# Advisor plans — local only, describe security findings; never push
+plans/
