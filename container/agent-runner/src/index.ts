@@ -23,6 +23,7 @@ import {
 } from '@anthropic-ai/claude-agent-sdk';
 import { fileURLToPath } from 'url';
 import { createRequire } from 'module';
+import { HOST_RESPONSE_FILE_PATTERN } from './ipc-response-files.js';
 
 // SDK 0.2.114+ ships the CLI as platform-specific native binaries via
 // optional deps. On Linux it auto-picks the musl variant first, which
@@ -459,10 +460,11 @@ function drainIpcInput(): string[] {
     for (const file of files) {
       // Round-trip response files are written by the HOST for an MCP tool that
       // is actively polling the input dir for them (read_emails, announce,
-      // send_message with return_ts). They are NOT container input messages —
-      // consuming/deleting them here would make that MCP tool hang/time out.
-      // Their own MCP reader unlinks them after reading.
-      if (/^(read_emails|announce|send_message)_/.test(file)) {
+      // send_message with return_ts, edit_message, delete_message). They are
+      // NOT container input messages — consuming/deleting them here would
+      // make that MCP tool hang/time out. Their own MCP reader unlinks them
+      // after reading.
+      if (HOST_RESPONSE_FILE_PATTERN.test(file)) {
         continue;
       }
       const filePath = path.join(IPC_INPUT_DIR, file);
