@@ -200,6 +200,11 @@ export function _getLastAgentTimestamp(): Record<string, string> {
   return lastAgentTimestamp;
 }
 
+/** @internal - exported for characterization tests */
+export async function _processGroupMessages(chatJid: string): Promise<boolean> {
+  return processGroupMessages(chatJid);
+}
+
 /** Find the last non-bot message ID (for reaction targeting). */
 function findLastUserMessageId(messages: NewMessage[]): string | undefined {
   for (let i = messages.length - 1; i >= 0; i--) {
