@@ -20,7 +20,7 @@ function getToken() {
   }, key.private_key, { algorithm: 'RS256' });
 }
 
-function request(method, path, body) {
+function requestOnce(method, path, body) {
   return new Promise((resolve, reject) => {
     const token = getToken();
     const data = body ? JSON.stringify(body) : null;
@@ -38,7 +38,7 @@ function request(method, path, body) {
       let d = '';
       res.on('data', c => d += c);
       res.on('end', () => {
-        if (res.statusCode >= 400) return reject(new Error('HTTP ' + res.statusCode + ': ' + d.slice(0, 200)));
+        if (res.statusCode >= 400) return reject(Object.assign(new Error('HTTP ' + res.statusCode + ': ' + d.slice(0, 200)), { statusCode: res.statusCode }));
         resolve(JSON.parse(d));
       });
     });
@@ -46,6 +46,20 @@ function request(method, path, body) {
     if (data) req.write(data);
     req.end();
   });
+}
+
+async function request(method, path, body, retries = 3, delay = 2000) {
+  for (let i = 0; i < retries; i++) {
+    try {
+      return await requestOnce(method, path, body);
+    } catch (err) {
+      if (err.statusCode === 503 && i < retries - 1) {
+        await new Promise(r => setTimeout(r, delay * (i + 1)));
+        continue;
+      }
+      throw err;
+    }
+  }
 }
 
 const SHEET_ID = '1PeSJDo3nj0AIIFmqce3ignp0g2aZWNzqWenRcsR8vxo';
