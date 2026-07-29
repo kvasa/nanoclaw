@@ -196,20 +196,27 @@ function oauthQueryString(method, url, consumerKey, consumerSecret, tokenKey, to
 }
 
 async function refreshGarminToken(tokenDir) {
-  try {
-    const oauth1 = JSON.parse(fs.readFileSync(path.join(tokenDir, 'oauth1_token.json'), 'utf-8'));
-    const consumerRes = await axios.get(OAUTH_CONSUMER_URL, { timeout: 8000 });
-    const c = consumerRes.data;
-    const qs = oauthQueryString('POST', OAUTH_EXCHANGE, c.consumer_key, c.consumer_secret, oauth1.oauth_token, oauth1.oauth_token_secret);
-    const res = await axios.post(`${OAUTH_EXCHANGE}?${qs}`, null, {
-      headers: { 'User-Agent': UA, 'Content-Type': 'application/x-www-form-urlencoded' },
-      timeout: 10000,
-    });
-    const now = Math.floor(Date.now() / 1000);
-    const oauth2 = { ...res.data, expires_at: now + res.data.expires_in, refresh_token_expires_at: now + res.data.refresh_token_expires_in };
-    fs.writeFileSync(path.join(tokenDir, 'oauth2_token.json'), JSON.stringify(oauth2, null, 2));
-    return oauth2;
-  } catch { return null; }
+  const oauth1 = JSON.parse(fs.readFileSync(path.join(tokenDir, 'oauth1_token.json'), 'utf-8'));
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try {
+      if (attempt > 0) await new Promise(r => setTimeout(r, attempt * 3000));
+      const consumerRes = await axios.get(OAUTH_CONSUMER_URL, { timeout: 8000 });
+      const c = consumerRes.data;
+      const qs = oauthQueryString('POST', OAUTH_EXCHANGE, c.consumer_key, c.consumer_secret, oauth1.oauth_token, oauth1.oauth_token_secret);
+      const res = await axios.post(`${OAUTH_EXCHANGE}?${qs}`, null, {
+        headers: { 'User-Agent': UA, 'Content-Type': 'application/x-www-form-urlencoded' },
+        timeout: 10000,
+      });
+      const now = Math.floor(Date.now() / 1000);
+      const oauth2 = { ...res.data, expires_at: now + res.data.expires_in, refresh_token_expires_at: now + res.data.refresh_token_expires_in };
+      fs.writeFileSync(path.join(tokenDir, 'oauth2_token.json'), JSON.stringify(oauth2, null, 2));
+      return oauth2;
+    } catch (e) {
+      const status = e.response?.status;
+      if (status && status < 500) break; // 4xx — don't retry
+    }
+  }
+  return null;
 }
 
 async function getGarmin() {
