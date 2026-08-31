@@ -32,6 +32,23 @@ const WMO_DESC = {
   95: 'bouřka', 96: 'bouřka s krupobitím', 99: 'bouřka s krupobitím',
 };
 
+// ─── Svátek ─────────────────────────────────────────────────────────────
+async function getSvatek() {
+  let lastErr;
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try {
+      if (attempt > 0) await new Promise(r => setTimeout(r, attempt * 3000));
+      const res = await axios.get('https://svatkyapi.cz/api/day', { timeout: 8000 });
+      return res.data.name || 'neznámý';
+    } catch (e) {
+      lastErr = e;
+      const status = e.response?.status;
+      if (status && status < 500) break; // 4xx — don't retry
+    }
+  }
+  return `nedostupný (${lastErr.message})`;
+}
+
 // ─── Weather ────────────────────────────────────────────────────────────
 async function getWeather() {
   const url = 'https://api.open-meteo.com/v1/forecast?latitude=50.0755&longitude=14.4378' +
@@ -306,7 +323,8 @@ async function main() {
   const nowPrague = new Date(new Date().toLocaleString('en-US', { timeZone: 'Europe/Prague' }));
   const dateLabel = nowPrague.toLocaleDateString('cs-CZ', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' });
 
-  const [weather, events, garmin] = await Promise.all([
+  const [svatek, weather, events, garmin] = await Promise.all([
+    getSvatek(),
     getWeather(),
     getCalendarEvents(nowPrague),
     getGarmin(),
@@ -314,6 +332,8 @@ async function main() {
 
   const lines = [
     `🌅 *Dobré ráno, Honzo!* — ${dateLabel}`,
+    '',
+    `🎉 *Svátek má:* ${svatek}`,
     '',
     `🌤 *Počasí Praha:* ${weather}`,
     '',
