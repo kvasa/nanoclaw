@@ -74,4 +74,4 @@ Záměrná rozhodnutí proti doslovnému znění nálezů (s odůvodněním):
 | `CONTAINER_MEMORY` | `2g` | strop paměti kontejneru (prázdné = vypnuto) |
 | `CONTAINER_CPUS` | `2` | strop CPU |
 | `CONTAINER_PIDS_LIMIT` | `512` | strop počtu procesů (jen Docker) |
-| `CLAUDE_MODEL` | `claude-opus-4-8` | model agenta v kontejneru |
+| `CLAUDE_MODEL` | `claude-sonnet-5-5` | model agenta v kontejneru |
