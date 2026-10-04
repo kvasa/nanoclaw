@@ -334,13 +334,6 @@ function main() {
       console.log(`  [ok] data/sessions/ (selective, ${stats.files} files total so far)`);
     }
 
-    // data/env/env
-    copyFile(
-      path.join(PROJECT_ROOT, 'data', 'env', 'env'),
-      path.join(tempDir, 'data', 'env', 'env'),
-      stats
-    );
-
     console.log(`\nCollected ${stats.files} files (${formatBytes(stats.bytes)} uncompressed)`);
 
     // 4. Create tar.gz
