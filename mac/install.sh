@@ -153,7 +153,20 @@ EOF
 
   if ! $GENERATE_ONLY; then
     plutil -lint -s "$plist"
-    launchctl bootstrap "$UID_DOMAIN" "$plist"
+    launchctl bootout "$UID_DOMAIN/$label" 2>/dev/null || true
+    if ! launchctl bootstrap "$UID_DOMAIN" "$plist"; then
+      echo >&2
+      echo "✗ launchd odmítl $label ($plist)" >&2
+      ls -l "$plist" >&2
+      if [ -n "${SSH_CONNECTION:-}" ]; then
+        echo "  Běžíš přes SSH — spusť install.sh v Terminálu přímo na Macu (gui session)." >&2
+      fi
+      if [ "$(stat -f %u "$plist")" != "$(id -u)" ]; then
+        echo "  Plist nevlastníš ty — na externím disku zapni vlastnictví: sudo diskutil enableOwnership <disk>" >&2
+      fi
+      echo "  Podrobnosti: sudo launchctl bootstrap $UID_DOMAIN \"$plist\"" >&2
+      exit 1
+    fi
   fi
   printf '✓ %-20s %-4s %s  → %s\n' "$name" "$days" "$time" "$channel"
   installed=$((installed + 1))
