@@ -15,7 +15,7 @@ Chová se stejně jako script-mode tasky v NanoClaw. Při chybě pošle `Chyba s
 
 ```bash
 brew install node                          # Node 18+
-git clone <repo> ~/code/nanoclaw && cd ~/code/nanoclaw && git checkout honza
+git clone -b honza honza@<server>:code/nanoclaw ~/code/nanoclaw && cd ~/code/nanoclaw   # přímo ze serveru přes SSH
 ./mac/pull-secrets.sh honza@<server>       # keystore, Garmin tokeny, Google service account
 ./mac/install.sh                           # ověří Slack token, npm install, načte úlohy
 sudo pmset -a sleep 0                      # ať Mac nespí (jinak úloha poběží až po probuzení)
@@ -33,7 +33,7 @@ tail -f mac/logs/morning-prices.log                                 # log
 DRY_RUN=1 node mac/run-and-post.mjs C0ALM0LPQLS groups/investice node morning-prices.js  # test bez posílání
 ```
 
-Po úpravě `jobs.conf` znovu spusť `./mac/install.sh`.
+Po úpravě `jobs.conf` znovu spusť `./mac/install.sh`. Novou verzi ze serveru stáhneš přes `git pull`.
 
 Časy jsou v lokálním čase Macu, takže přechod na letní a zimní čas řeší macOS sám.
 Pokud Mac v danou dobu spal, launchd úlohu spustí po probuzení.
