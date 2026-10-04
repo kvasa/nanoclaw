@@ -4,13 +4,19 @@
 #
 #   ./mac/install.sh              install / update
 #   PLIST_DIR=/tmp/x ./mac/install.sh --generate-only   only write plists (for testing)
+#
+# Plists go to ~/Library/LaunchAgents, or to /Library/LaunchAgents (root-owned,
+# needs sudo) when the home volume ignores ownership — launchd rejects plists
+# there with "bad ownership/permissions" (Bootstrap failed: 5).
 set -euo pipefail
 
 MAC_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_DIR="$(dirname "$MAC_DIR")"
 JOBS_FILE="$MAC_DIR/jobs.conf"
 LOG_DIR="$MAC_DIR/logs"
-PLIST_DIR="${PLIST_DIR:-$HOME/Library/LaunchAgents}"
+USER_PLIST_DIR="$HOME/Library/LaunchAgents"
+SYSTEM_PLIST_DIR="/Library/LaunchAgents"
+PLIST_DIR="${PLIST_DIR:-}"
 LABEL_PREFIX="com.nanoclaw.mac"
 GENERATE_ONLY=false
 [ "${1:-}" = "--generate-only" ] && GENERATE_ONLY=true
@@ -74,15 +80,42 @@ if ! $GENERATE_ONLY; then
   done
 fi
 
-# --- Generate plists ------------------------------------------------------
-mkdir -p "$PLIST_DIR" "$LOG_DIR"
-UID_DOMAIN="gui/$(id -u)"
+# --- Where plists go -------------------------------------------------------
+home_ignores_ownership() {
+  local dev
+  dev="$(df -P "$HOME" | awk 'NR==2 {print $1}')"
+  diskutil info "$dev" 2>/dev/null | grep -qiE '^ *Owners: *Disabled'
+}
 
-# Unload and remove previously installed jobs so deletions from jobs.conf apply
-for old in "$PLIST_DIR/$LABEL_PREFIX".*.plist; do
+if [ -z "$PLIST_DIR" ]; then
+  PLIST_DIR="$USER_PLIST_DIR"
+  if ! $GENERATE_ONLY && home_ignores_ownership; then
+    echo "→ Disk s domovským adresářem ignoruje vlastnictví, plisty půjdou do $SYSTEM_PLIST_DIR (sudo)"
+    PLIST_DIR="$SYSTEM_PLIST_DIR"
+  fi
+fi
+SUDO=""
+if [ "$PLIST_DIR" = "$SYSTEM_PLIST_DIR" ]; then
+  SUDO="sudo"
+  sudo -v
+fi
+
+# --- Generate plists ------------------------------------------------------
+$SUDO mkdir -p "$PLIST_DIR"
+mkdir -p "$LOG_DIR"
+UID_DOMAIN="gui/$(id -u)"
+TMP_PLIST="$(mktemp)"
+trap 'rm -f "$TMP_PLIST"' EXIT
+
+# Unload and remove previously installed jobs (from either location) so
+# deletions from jobs.conf apply
+for old in "$USER_PLIST_DIR/$LABEL_PREFIX".*.plist "$SYSTEM_PLIST_DIR/$LABEL_PREFIX".*.plist "$PLIST_DIR/$LABEL_PREFIX".*.plist; do
   [ -e "$old" ] || continue
   $GENERATE_ONLY || launchctl bootout "$UID_DOMAIN/$(basename "$old" .plist)" 2>/dev/null || true
-  rm -f "$old"
+  case "$old" in
+    "$SYSTEM_PLIST_DIR"/*) $GENERATE_ONLY || sudo rm -f "$old" ;;
+    *) rm -f "$old" ;;
+  esac
 done
 
 set -f # no globbing when splitting commands into words
@@ -149,7 +182,13 @@ EOF
 </dict>
 </plist>
 EOF
-  } > "$plist"
+  } > "$TMP_PLIST"
+
+  if [ -n "$SUDO" ]; then
+    sudo install -m 644 -o root -g wheel "$TMP_PLIST" "$plist"
+  else
+    install -m 644 "$TMP_PLIST" "$plist"
+  fi
 
   if ! $GENERATE_ONLY; then
     plutil -lint -s "$plist"
@@ -161,10 +200,8 @@ EOF
       if [ -n "${SSH_CONNECTION:-}" ]; then
         echo "  Běžíš přes SSH — spusť install.sh v Terminálu přímo na Macu (gui session)." >&2
       fi
-      if [ "$(stat -f %u "$plist")" != "$(id -u)" ]; then
-        echo "  Plist nevlastníš ty — na externím disku zapni vlastnictví: sudo diskutil enableOwnership <disk>" >&2
-      fi
-      echo "  Podrobnosti: sudo launchctl bootstrap $UID_DOMAIN \"$plist\"" >&2
+      echo "  Důvod najdeš v logu: log show --last 2m --predicate 'process == \"launchd\"' | grep $label" >&2
+      echo "  Při \"bad ownership/permissions\" zkus: PLIST_DIR=$SYSTEM_PLIST_DIR ./mac/install.sh" >&2
       exit 1
     fi
   fi
