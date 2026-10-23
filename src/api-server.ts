@@ -28,6 +28,7 @@ export interface SlackNotifier {
 
 export interface ApiServerConfig {
   port: number;
+  host: string;
   token: string;
   defaultGroupId: string;
   getRegisteredGroups: () => Record<string, RegisteredGroup>;
@@ -423,8 +424,11 @@ export function startApiServer(config: ApiServerConfig): Promise<Server> {
       }
     });
 
-    server.listen(config.port, () => {
-      logger.info({ port: config.port }, 'API server started');
+    server.listen(config.port, config.host, () => {
+      logger.info(
+        { port: config.port, host: config.host },
+        'API server started',
+      );
       resolve(server);
     });
 

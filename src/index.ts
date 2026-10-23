@@ -3,6 +3,7 @@ import path from 'path';
 
 import {
   API_GROUP_ID,
+  API_HOST,
   API_PORT,
   API_SLACK_CHANNEL_ID,
   API_TOKEN,
@@ -834,6 +835,7 @@ async function main(): Promise<void> {
 
     apiServer = await startApiServer({
       port: API_PORT,
+      host: API_HOST,
       token: API_TOKEN,
       defaultGroupId: API_GROUP_ID,
       getRegisteredGroups: () => registeredGroups,

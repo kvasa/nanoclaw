@@ -11,6 +11,7 @@ const envConfig = readEnvFile([
   'LOG_LEVEL',
   'API_TOKEN',
   'API_PORT',
+  'API_HOST',
   'API_GROUP_ID',
   'API_SLACK_CHANNEL_ID',
   'GMAIL_ALLOWED_SENDERS',
@@ -79,6 +80,9 @@ export const API_PORT = parseInt(
   process.env.API_PORT || envConfig.API_PORT || '3002',
   10,
 );
+// Loopback by default: public access goes through the nginx TLS proxy (api.jarmil.fun).
+export const API_HOST =
+  process.env.API_HOST || envConfig.API_HOST || '127.0.0.1';
 export const API_TOKEN = process.env.API_TOKEN || envConfig.API_TOKEN || '';
 export const API_GROUP_ID =
   process.env.API_GROUP_ID || envConfig.API_GROUP_ID || 'assistant';
