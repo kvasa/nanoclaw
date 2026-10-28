@@ -42,7 +42,7 @@ Use when the user asks to read something aloud ("přečti to nahlas"). Send only
 
 ## Daily Session Restart
 
-Session se restartuje každý den ve 23:59 CEST. Před restartem se uloží shrnutí dne do `/workspace/group/daily-log/YYYY-MM-DD.md`.
+Session se restartuje každý den ve 22:00 (pražský čas). Před restartem se uloží shrnutí dne do `/workspace/group/daily-log/YYYY-MM-DD.md`.
 
 **Při startu nové session:**
 1. Přečti poslední 3 soubory z `/workspace/group/daily-log/` pro kontext
@@ -50,7 +50,7 @@ Session se restartuje každý den ve 23:59 CEST. Před restartem se uloží shrn
 
 **Preference uživatele (Honza):**
 - Hlasové odpovědi (`send_voice_message`) pouze na vyžádání
-- Časové pásmo: CEST (UTC+2) v létě, CET (UTC+1) v zimě
+- Časové pásmo: Europe/Prague. Cron úlohy se zadávají v pražském lokálním čase — scheduler sám řeší letní/zimní čas, NEPLÁNUJ žádné ruční posuny úloh při změně času.
 - Město: Praha / Mladá Boleslav
 - Stručné odpovědi preferovány
 

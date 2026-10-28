@@ -10,6 +10,7 @@ const envConfig = readEnvFile([
   'ASSISTANT_NAME',
   'ASSISTANT_HAS_OWN_NUMBER',
   'LOG_LEVEL',
+  'TZ',
   'API_TOKEN',
   'API_PORT',
   'API_HOST',
@@ -99,9 +100,11 @@ export const TRIGGER_PATTERN = new RegExp(
 );
 
 // Timezone for scheduled tasks (cron expressions, etc.)
-// Uses system timezone by default
+// Uses TZ from env/.env, falls back to system timezone
 export const TIMEZONE =
-  process.env.TZ || Intl.DateTimeFormat().resolvedOptions().timeZone;
+  process.env.TZ ||
+  envConfig.TZ ||
+  Intl.DateTimeFormat().resolvedOptions().timeZone;
 
 export const LOG_LEVEL = process.env.LOG_LEVEL || envConfig.LOG_LEVEL || 'info';
 
